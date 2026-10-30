@@ -1,0 +1,118 @@
+{
+  "status": "approved_profile_example",
+  "format_code": "money_manager_xlsx_v1",
+  "source_timezone": "Europe/Saratov",
+  "currency_code": "RUB",
+  "source_record_count": 6,
+  "movement_count_after_explicit_decisions": 7,
+  "account_mapping": {
+    "Демо: основной": "demo_checking",
+    "Демо: накопления": "demo_savings"
+  },
+  "required_user_decisions": [
+    "Map both source accounts to existing accounts owned by the authenticated user",
+    "Confirm the economic meaning of the ordinary income and expense records",
+    "Link purchase_refund to purchase as a partial refund under D-05",
+    "Explicitly confirm demo_transfer as a transfer between owned accounts under D-04"
+  ],
+  "movements": [
+    {
+      "id": "purchase",
+      "source": {
+        "sheet": "Расходы",
+        "row": 3
+      },
+      "account": "demo_checking",
+      "occurred_on": "2026-10-01",
+      "amount": "-1000.00",
+      "kind_after_confirmation": "expense"
+    },
+    {
+      "id": "groceries",
+      "source": {
+        "sheet": "Расходы",
+        "row": 4
+      },
+      "account": "demo_checking",
+      "occurred_on": "2026-10-03",
+      "amount": "-200.25",
+      "kind_after_confirmation": "expense"
+    },
+    {
+      "id": "fee",
+      "source": {
+        "sheet": "Расходы",
+        "row": 5
+      },
+      "account": "demo_checking",
+      "occurred_on": "2026-10-04",
+      "amount": "-10.00",
+      "kind_after_confirmation": "expense"
+    },
+    {
+      "id": "salary",
+      "source": {
+        "sheet": "Доходы",
+        "row": 3
+      },
+      "account": "demo_checking",
+      "occurred_on": "2026-10-01",
+      "amount": "5000.00",
+      "kind_after_confirmation": "income"
+    },
+    {
+      "id": "purchase_refund",
+      "source": {
+        "sheet": "Доходы",
+        "row": 4
+      },
+      "account": "demo_checking",
+      "occurred_on": "2026-10-05",
+      "amount": "300.00",
+      "kind_after_confirmation": "refund",
+      "refund_of": "purchase"
+    },
+    {
+      "id": "transfer_out",
+      "source": {
+        "sheet": "Переводы",
+        "row": 3,
+        "side": "outgoing"
+      },
+      "account": "demo_checking",
+      "occurred_on": "2026-10-02",
+      "amount": "-1000.00",
+      "kind_after_confirmation": "transfer",
+      "transfer_group": "demo_transfer"
+    },
+    {
+      "id": "transfer_in",
+      "source": {
+        "sheet": "Переводы",
+        "row": 3,
+        "side": "incoming"
+      },
+      "account": "demo_savings",
+      "occurred_on": "2026-10-02",
+      "amount": "1000.00",
+      "kind_after_confirmation": "transfer",
+      "transfer_group": "demo_transfer"
+    }
+  ],
+  "expected_totals_after_confirmation": {
+    "income": "5000.00",
+    "expense_before_refunds": "1210.25",
+    "expense_refunds": "300.00",
+    "net_expense": "910.25",
+    "net_cash_flow": "4089.75",
+    "movement_by_account": {
+      "demo_checking": "3089.75",
+      "demo_savings": "1000.00"
+    },
+    "account_balance": null,
+    "balance_unavailable_reason": "No confirmed opening balance or history coverage is included"
+  },
+  "notice": "These are synthetic records and approved expected results after explicit per-import user decisions, not output from an implemented importer. Example IDs are explanatory labels, not bank IDs or API resource IDs.",
+  "approved_on": "2026-10-30",
+  "source_code": "money_manager"
+}
