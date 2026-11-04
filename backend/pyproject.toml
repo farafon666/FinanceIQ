@@ -1,14 +1,44 @@
 [build-system]
-requires = ["setuptools"]
+requires = ["setuptools==84.2.1"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "financeiq-backend"
 version = "0.1.0"
 description = "Backend package for FinanceIQ."
+requires-python = ">=3.14.10,<3.15"
 dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pip==26.2.2",
+    "pip-tools==7.6.2",
+    "ruff==0.17.3",
+    "mypy==2.4.1",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["financeiq", "financeiq.*"]
 namespaces = false
+
+[tool.pip-tools.compile]
+extra = ["dev"]
+all-build-deps = true
+generate-hashes = true
+allow-unsafe = true
+strip-extras = true
+
+[tool.ruff]
+target-version = "py314"
+line-length = 88
+src = ["src"]
+preview = false
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+files = ["src"]

@@ -6,7 +6,7 @@ FinanceIQ — персональная веб-платформа для учет
 
 ## Текущий статус
 
-Этап 0 завершен 2026-11-02: согласованы продуктовые правила финансового фундамента, доменная модель, PostgreSQL-схема, матрица инвариантов и архитектура MVP (пакеты 0.13/0.14). По отдельному поручению пользователя 2026-11-04 выполнена задача 1.1: создан устанавливаемый каркас backend. Остальные задачи этапа 1 выполняются по отдельным поручениям; этап 1 не завершен. HTTP-приложение и окружение его запуска еще не реализованы. Детали Auth D-12 и прогноза D-11 остаются на своих контрольных точках.
+Этап 0 завершен 2026-11-02: согласованы продуктовые правила финансового фундамента, доменная модель, PostgreSQL-схема, матрица инвариантов и архитектура MVP (пакеты 0.13/0.14). По отдельным поручениям пользователя 2026-11-04 выполнены задачи 1.1 и 1.2: создан устанавливаемый каркас backend, закреплены версии Python и инструментов, настроены форматирование, lint и строгая проверка типов. Установка и проверки выполнены на Windows x64 и Linux x86_64 с CPython 3.14.10; подробности — в ROADMAP. Остальные задачи этапа 1 выполняются по отдельным поручениям; этап 1 не завершен. HTTP-приложение и окружение его запуска еще не реализованы. Детали Auth D-12 и прогноза D-11 остаются на своих контрольных точках.
 
 ## Планируемые возможности MVP
 
@@ -32,7 +32,11 @@ MVP рассчитан на одну валюту — RUB — и один про
 
 ```text
 backend/
+├── .python-version
 ├── pyproject.toml
+├── requirements/
+│   ├── dev-windows-py314.txt
+│   └── dev-linux-py314.txt
 ├── src/financeiq/
 │   ├── __init__.py
 │   ├── api/
@@ -54,16 +58,21 @@ backend/
 
 `api` — HTTP-граница, `core` — конфигурация и lifecycle, `db` — инфраструктура БД, `shared` — общие примитивы. Бизнес-модули пока содержат только `__init__.py`; файлы слоев добавляются вместе с соответствующей функциональностью. `main.py` появится в задаче 1.4, Alembic — в 1.6, настройка pytest — в 1.8.
 
-## Локальная установка каркаса backend
+## Локальная установка backend
 
-Используются `venv` и `pip`. Команды выполняются из корня репозитория; требуется установленный Python с модулями `venv` и `pip`. Целевая версия Python, версии инструментов и фиксация зависимостей определяются в задаче 1.2. Для сборки `pip` устанавливает `setuptools` в изолированное сборочное окружение; требуется доступ к индексу пакетов либо подготовленный cache.
+Требуется CPython **3.14.10** с модулями `venv` и `pip`; эталонная версия записана в `backend/.python-version`. Метаданные пакета допускают исправления ветки `>=3.14.10,<3.15`; обновление эталонного patch-релиза сопровождается повторной проверкой окружений. Файл `.python-version` сам не устанавливает и не переключает Python.
+
+Используются `venv` и `pip`. Прямые dev-зависимости и сборочный backend закреплены в `backend/pyproject.toml`: pip 26.2.2, pip-tools 7.6.2, setuptools 84.2.1, Ruff 0.17.3 и mypy 2.4.1. Сгенерированные lock-файлы содержат точные версии и SHA-256 всех прямых, транзитивных и сборочных зависимостей. Windows и Linux используют отдельные lock-файлы. Требуется доступ к PyPI либо заранее подготовленный cache.
+
+Команды выполняются из корня репозитория. Если существующий `.venv` создан другой версией Python, пересоздайте его перед установкой. На Windows выберите установленный Python 3.14.10; при использовании launcher проверьте его командой `py -3.14 --version`.
 
 PowerShell:
 
 ```powershell
 cd backend
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e .
+py -3.14 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --require-hashes -r requirements/dev-windows-py314.txt
+.\.venv\Scripts\python.exe -m pip install --no-deps --no-build-isolation -e .
 .\.venv\Scripts\python.exe -c "import financeiq; print(financeiq.__file__)"
 ```
 
@@ -71,24 +80,67 @@ Linux:
 
 ```bash
 cd backend
-python3 -m venv .venv
-.venv/bin/python -m pip install -e .
+python3.14 -m venv .venv
+.venv/bin/python -m pip install --require-hashes -r requirements/dev-linux-py314.txt
+.venv/bin/python -m pip install --no-deps --no-build-isolation -e .
 .venv/bin/python -c "import financeiq; print(financeiq.__file__)"
 ```
 
-Команды используют Python созданного окружения напрямую, поэтому его активация не требуется. Editable-установка делает пакет доступным без изменения `PYTHONPATH`. Это установка Python-пакета; HTTP-сервер и подключение к PostgreSQL появятся в следующих задачах.
+Команды используют Python созданного окружения напрямую, поэтому его активация не требуется. Editable-установка делает пакет доступным без изменения `PYTHONPATH`. Все зависимости предварительно устанавливаются из lock-файла; `--no-deps --no-build-isolation` предотвращает отдельное разрешение зависимостей при установке пакета. HTTP-сервер и подключение к PostgreSQL появятся в следующих задачах.
+
+## Проверки backend
+
+Команды выполняются из `backend` после установки dev-окружения.
+
+```powershell
+# PowerShell
+.\.venv\Scripts\python.exe -m pip check
+.\.venv\Scripts\python.exe -m ruff format --check src tests
+.\.venv\Scripts\python.exe -m ruff check src tests
+.\.venv\Scripts\python.exe -m mypy
+```
+
+```bash
+# Linux
+.venv/bin/python -m pip check
+.venv/bin/python -m ruff format --check src tests
+.venv/bin/python -m ruff check src tests
+.venv/bin/python -m mypy
+```
+
+Ruff проверяет форматирование и правила `E4`, `E7`, `E9`, `F`, `I`, `UP`, `B`, включая сортировку импортов; длина строки — 88, целевой Python — 3.14, preview выключен. mypy проверяет `src` в строгом режиме без глобального подавления отсутствующих импортов. Проверка типов будущих тестов подключается в 1.8 вместе с настройкой pytest.
+
+Для применения форматирования замените `ruff format --check src tests` на `ruff format src tests`. Безопасные исправления lint выполняются командой `ruff check --fix src tests`; после них повторите всю последовательность проверок. Настройки инструментов находятся в `pyproject.toml`.
 
 Для сборки wheel из каталога `backend`:
 
 ```powershell
 # PowerShell
-.\.venv\Scripts\python.exe -m pip wheel --no-deps --wheel-dir dist .
+.\.venv\Scripts\python.exe -m pip wheel --no-deps --no-build-isolation --wheel-dir dist .
 ```
 
 ```bash
 # Linux
-.venv/bin/python -m pip wheel --no-deps --wheel-dir dist .
+.venv/bin/python -m pip wheel --no-deps --no-build-isolation --wheel-dir dist .
 ```
+
+## Обновление зависимостей backend
+
+Обычная установка использует готовый lock-файл. Для изменения зависимостей отредактируйте соответствующие точные версии в `pyproject.toml`, затем пересоздайте lock-файлы на каждой ОС с CPython 3.14.10. Сборочные зависимости, dev extra и хеши включаются настройками `[tool.pip-tools.compile]`.
+
+Генератор запускается из dev-окружения с закрепленными pip и pip-tools. Если меняется сам генератор или setuptools, сначала установите новые закрепленные версии в отдельное окружение генерации и проверьте их совместимость. Lock-файлы вручную не редактируются.
+
+```powershell
+# PowerShell, из backend
+.\.venv\Scripts\python.exe -m piptools compile --output-file requirements/dev-windows-py314.txt pyproject.toml
+```
+
+```bash
+# Linux, из backend
+.venv/bin/python -m piptools compile --output-file requirements/dev-linux-py314.txt pyproject.toml
+```
+
+Без `--upgrade` генератор сохраняет удовлетворяющие требованиям версии существующего lock-файла. Для намеренного обновления транзитивных зависимостей добавьте `--upgrade`; для одной зависимости — `--upgrade-package PACKAGE`. После изменения каждого lock-файла выполните установку в чистое окружение, все проверки и повторную генерацию без обновления: содержимое должно остаться прежним. Зафиксируйте исходную конфигурацию и оба lock-файла в одном изменении. Настройка CI выполняется в 1.9.
 
 ## Документация
 

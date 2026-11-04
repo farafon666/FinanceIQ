@@ -8,3 +8,5 @@ __pycache__/
 *.egg-info/
 backend/build/
 backend/dist/
+.ruff_cache/
+.mypy_cache/
