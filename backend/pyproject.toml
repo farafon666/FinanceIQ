@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "financeiq-backend"
+version = "0.1.0"
+description = "Backend package for FinanceIQ."
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["financeiq", "financeiq.*"]
+namespaces = false

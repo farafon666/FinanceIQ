@@ -1,0 +1,1 @@
+"""FinanceIQ backend package."""
