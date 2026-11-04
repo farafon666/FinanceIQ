@@ -1,6 +1,11 @@
 .agents/
 .codex/
 
+# Local environment files; examples must contain no secrets.
+.env
+.env.*
+!.env.example
+
 # Python backend
 backend/.venv/
 __pycache__/
