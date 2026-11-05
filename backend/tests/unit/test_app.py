@@ -24,6 +24,9 @@ class ApplicationTests(unittest.TestCase):
             for key, value in os.environ.items()
             if not key.upper().startswith("FINANCEIQ_")
         }
+        clean_environment["FINANCEIQ_DATABASE_URL"] = (
+            "postgresql+asyncpg://test:unused@127.0.0.1:5432/financeiq_test"
+        )
         self.enterContext(patch.dict(os.environ, clean_environment, clear=True))
         self.directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.env_file = self.directory / ".env"
@@ -158,6 +161,8 @@ class ApplicationTests(unittest.TestCase):
                 "side_effect=AssertionError('Application created during import')),\n"
                 "    patch('uvicorn.run', "
                 "side_effect=AssertionError('Server started during import')),\n"
+                "    patch('sqlalchemy.ext.asyncio.create_async_engine', "
+                "side_effect=AssertionError('Engine created during import')),\n"
                 "):\n"
                 "    import financeiq.main\n",
             ],

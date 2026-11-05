@@ -8,6 +8,8 @@ version = "0.1.0"
 description = "Backend package for FinanceIQ."
 requires-python = ">=3.14.10,<3.15"
 dependencies = [
+    "SQLAlchemy[asyncio]==2.0.57",
+    "asyncpg==0.32.0",
     "fastapi==0.162.0",
     "pydantic==2.14.2",
     "pydantic-settings==2.16.2",
@@ -16,6 +18,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    # asyncpg has no py.typed marker; keep strict checking without suppressions.
+    "asyncpg-stubs==0.32.0",
     "httpx==0.28.1",
     "pip==26.2.2",
     "pip-tools==7.6.2",

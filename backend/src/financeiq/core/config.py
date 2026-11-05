@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Literal
 
-from pydantic import ValidationError
+from pydantic import Field, SecretStr, ValidationError, field_validator
 from pydantic_settings import (
     BaseSettings,
     DotEnvSettingsSource,
@@ -11,6 +11,8 @@ from pydantic_settings import (
     SettingsConfigDict,
     SettingsError,
 )
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError
 
 _ENV_PREFIX = "FINANCEIQ_"
 
@@ -34,6 +36,27 @@ class Settings(BaseSettings):
 
     app_env: Literal["development", "test", "production"] = "development"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+    database_url: SecretStr = Field(repr=False)
+
+    @field_validator("database_url")
+    @classmethod
+    def validate_database_url(cls, value: SecretStr) -> SecretStr:
+        raw = value.get_secret_value()
+        try:
+            url = make_url(raw)
+            valid = (
+                url.drivername == "postgresql+asyncpg"
+                and bool(url.username)
+                and bool(url.host)
+                and bool(url.database)
+                and (url.port is None or 1 <= url.port <= 65535)
+                and not any(character.isspace() for character in raw)
+            )
+        except ArgumentError, ValueError:
+            valid = False
+        if not valid:
+            raise ValueError("Invalid PostgreSQL connection URL.") from None
+        return value
 
     @classmethod
     def settings_customise_sources(
