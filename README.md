@@ -6,7 +6,7 @@ FinanceIQ — персональная веб-платформа для учет
 
 ## Текущий статус
 
-Этап 0 завершен 2026-11-02: согласованы продуктовые правила финансового фундамента, доменная модель, PostgreSQL-схема, матрица инвариантов и архитектура MVP (пакеты 0.13/0.14). По отдельным поручениям пользователя 2026-11-04 выполнены задачи 1.1–1.4: создан устанавливаемый каркас backend, закреплены версии Python и инструментов, настроены форматирование, lint, строгая проверка типов и конфигурация через переменные окружения с явным подключением `.env`, добавлено минимальное FastAPI-приложение с проверкой работоспособности. Установка, проверки и запуск HTTP-сервера выполнены на Windows x64 и Linux x86_64 с CPython 3.14.10; подробности — в ROADMAP. Остальные задачи этапа 1 выполняются по отдельным поручениям; этап 1 не завершен. В задаче 1.5 от 2026-11-05 добавлены asyncpg/SQLAlchemy, сессии на запрос, сервисные транзакции и безопасные DB-ошибки. Чистая установка и 59 unit-тестов проверены на Windows/Linux; PostgreSQL не запускалась по согласованной границе приемки. Проверки реальной БД перенесены в 1.8, миграции и Docker Compose еще не реализованы. Детали Auth D-12 и прогноза D-11 остаются на своих контрольных точках.
+Этап 0 завершен 2026-11-02: согласованы продуктовые правила финансового фундамента, доменная модель, PostgreSQL-схема, матрица инвариантов и архитектура MVP (пакеты 0.13/0.14). По отдельным поручениям пользователя 2026-11-04 выполнены задачи 1.1–1.4: создан устанавливаемый каркас backend, закреплены версии Python и инструментов, настроены форматирование, lint, строгая проверка типов и конфигурация через переменные окружения с явным подключением `.env`, добавлено минимальное FastAPI-приложение с проверкой работоспособности. Установка, проверки и запуск HTTP-сервера выполнены на Windows x64 и Linux x86_64 с CPython 3.14.10; подробности — в ROADMAP. Остальные задачи этапа 1 выполняются по отдельным поручениям; этап 1 не завершен. В задаче 1.5 от 2026-11-05 добавлены asyncpg/SQLAlchemy, сессии на запрос, сервисные транзакции и безопасные DB-ошибки. Чистая установка и 59 unit-тестов проверены на Windows/Linux; PostgreSQL не запускалась по согласованной границе приемки. Перенесенные проверки 1.5 остаются в 1.8. В 1.6 от 2026-11-16 добавлены Alembic и отдельные роли миграций/runtime, проверенные на одноразовой PostgreSQL 18.7. Предметные таблицы и Docker Compose еще не реализованы. Детали Auth D-12 и прогноза D-11 остаются на своих контрольных точках.
 
 ## Планируемые возможности MVP
 
@@ -34,6 +34,8 @@ MVP рассчитан на одну валюту — RUB — и один про
 backend/
 ├── .python-version
 ├── pyproject.toml
+├── alembic.ini
+├── migrations/
 ├── requirements/
 │   ├── dev-windows-py314.txt
 │   └── dev-linux-py314.txt
@@ -57,13 +59,13 @@ backend/
     └── integration/
 ```
 
-`main.py` содержит фабрику приложения, `api` — HTTP-границу с общим router `/api/v1` и health endpoint, `core` — конфигурацию и lifecycle, `db` — инфраструктуру БД, `shared` — общие примитивы. Бизнес-модули пока содержат только `__init__.py`; файлы слоев добавляются вместе с соответствующей функциональностью. Alembic появится в задаче 1.6, настройка pytest — в 1.8.
+`main.py` содержит фабрику приложения, `api` — HTTP-границу с общим router `/api/v1` и health endpoint, `core` — конфигурацию и lifecycle, `db` — инфраструктуру БД, `shared` — общие примитивы. Бизнес-модули пока содержат только `__init__.py`; файлы слоев добавляются вместе с соответствующей функциональностью. Alembic и техническая начальная ревизия добавлены в 1.6; настройка pytest остается в 1.8.
 
 ## Локальная установка backend
 
 Требуется CPython **3.14.10** с модулями `venv` и `pip`; эталонная версия записана в `backend/.python-version`. Метаданные пакета допускают исправления ветки `>=3.14.10,<3.15`; обновление эталонного patch-релиза сопровождается повторной проверкой окружений. Файл `.python-version` сам не устанавливает и не переключает Python.
 
-Используются `venv` и `pip`. В `backend/pyproject.toml` закреплены runtime-зависимости SQLAlchemy с extra `asyncio` 2.0.57, asyncpg 0.32.0, FastAPI 0.162.0, Pydantic 2.14.2, pydantic-settings 2.16.2 и базовый Uvicorn 0.54.0, dev-зависимости asyncpg-stubs 0.32.0, HTTPX 0.28.1, pip 26.2.2, pip-tools 7.6.2, Ruff 0.17.3, mypy 2.4.1 и сборочный backend setuptools 84.2.1. asyncpg-stubs нужен для строгой проверки типов: сам драйвер не поставляет `py.typed`; подавление ошибок mypy не добавляется. Сгенерированные lock-файлы содержат точные версии и SHA-256 всех прямых, транзитивных и сборочных зависимостей. Windows и Linux используют отдельные lock-файлы. Требуется доступ к PyPI либо заранее подготовленный cache.
+Используются `venv` и `pip`. В `backend/pyproject.toml` закреплены runtime-зависимости SQLAlchemy с extra `asyncio` 2.0.57, asyncpg 0.32.0, Alembic 1.20.1, FastAPI 0.162.0, Pydantic 2.14.2, pydantic-settings 2.16.2 и базовый Uvicorn 0.54.0, dev-зависимости asyncpg-stubs 0.32.0, HTTPX 0.28.1, pip 26.2.2, pip-tools 7.6.2, Ruff 0.17.3, mypy 2.4.1 и сборочный backend setuptools 84.2.1. asyncpg-stubs нужен для строгой проверки типов: сам драйвер не поставляет `py.typed`; подавление ошибок mypy не добавляется. Сгенерированные lock-файлы содержат точные версии и SHA-256 всех прямых, транзитивных и сборочных зависимостей. Windows и Linux используют отдельные lock-файлы. Требуется доступ к PyPI либо заранее подготовленный cache.
 
 Команды выполняются из корня репозитория. Если существующий `.venv` создан другой версией Python, пересоздайте его перед установкой. На Windows выберите установленный Python 3.14.10; при использовании launcher проверьте его командой `py -3.14 --version`.
 
@@ -87,7 +89,7 @@ python3.14 -m venv .venv
 .venv/bin/python -c "import financeiq; print(financeiq.__file__)"
 ```
 
-Команды используют Python созданного окружения напрямую, поэтому его активация не требуется. Editable-установка делает пакет доступным без изменения `PYTHONPATH`. Все зависимости предварительно устанавливаются из lock-файла; `--no-deps --no-build-isolation` предотвращает отдельное разрешение зависимостей при установке пакета. Инфраструктура SQLAlchemy добавлена в 1.5; реальная PostgreSQL пока не проверялась.
+Команды используют Python созданного окружения напрямую, поэтому его активация не требуется. Editable-установка делает пакет доступным без изменения `PYTHONPATH`. Все зависимости предварительно устанавливаются из lock-файла; `--no-deps --no-build-isolation` предотвращает отдельное разрешение зависимостей при установке пакета. Инфраструктура SQLAlchemy добавлена в 1.5; миграции и права проверены на PostgreSQL в 1.6. Перенесенные проверки runtime-транзакций остаются в 1.8.
 
 ## Настройки backend
 
@@ -99,7 +101,7 @@ python3.14 -m venv .venv
 | `FINANCEIQ_LOG_LEVEL` | `log_level` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` | `INFO` |
 | `FINANCEIQ_DATABASE_URL` | `database_url` (`SecretStr`) | `postgresql+asyncpg://user:password@host:port/database` | Нет, обязательна |
 
-Имена переменных регистронезависимы; используйте приведенное написание. Значения регистрозависимы: пустая строка, `Production` или `info` являются ошибкой. `development` не включает отладочные endpoints или дополнительные логи. URL должен содержать пользователя, хост и имя базы; порт необязателен, при указании допустим диапазон 1–65535. Неэкранированные пробельные символы запрещены; специальные символы в credentials кодируются через percent-encoding. URL хранится как секрет и исключен из `repr(Settings)`; отсутствие или ошибка URL прерывает создание приложения с безопасным `ConfigurationError`. Полномочия миграций появятся в 1.6, Auth — после согласования D-12.
+Имена переменных регистронезависимы; используйте приведенное написание. Значения регистрозависимы: пустая строка, `Production` или `info` являются ошибкой. `development` не включает отладочные endpoints или дополнительные логи. URL должен содержать пользователя, хост и имя базы; порт необязателен, при указании допустим диапазон 1–65535. Неэкранированные пробельные символы запрещены; специальные символы в credentials кодируются через percent-encoding. URL хранится как секрет и исключен из `repr(Settings)`; отсутствие или ошибка URL прерывает создание приложения с безопасным `ConfigurationError`. Полномочия миграций описаны ниже; Auth появится после согласования D-12.
 
 По умолчанию `load_settings()` читает только окружение процесса. Для CLI-запуска Uvicorn сначала задайте `FINANCEIQ_DATABASE_URL` в том же терминале. Синтетический пример, credentials и имя базы нужно заменить:
 
@@ -194,6 +196,64 @@ FastAPI lifespan создает отдельные `app.state.engine` и `app.st
 
 DB-граница возвращает безопасный `DatabaseError` без исходной цепочки исключений. Необработанная ошибка дает HTTP 500 и строго `{"detail":"Database operation failed."}`; в технический лог попадает только `database_error`. Отключены `echo` и `echo_pool`, включен `hide_parameters`; собственные уникальные логгеры движка/пула подавлены даже при DEBUG предка, root logger не меняется. Ошибки подключения и неизвестные ошибки драйвера при SQL-выполнении санитизируются отдельно: они не всегда являются `SQLAlchemyError`. Доменные ошибки и общий HTTP-контракт остаются на этапе 3. Новых HTTP endpoints для проверки БД нет.
 
+## Миграции и полномочия PostgreSQL
+
+Задача 1.6 использует PostgreSQL 18.7 и защищенную схему `public`. Alembic запускается отдельным процессом из checkout; файлы `alembic.ini` и `migrations/` не входят в Python wheel. HTTP-приложение не запускает миграции и не получает их credentials.
+
+Первичная настройка выполняется администратором на отдельной локальной БД `financeiq`. Требуются `createdb` и `psql` из PostgreSQL client tools; пароль администратора вводится интерактивно. Следующие команды одинаковы для PowerShell и Linux и выполняются из корня репозитория; замените `postgres`, host и port при необходимости:
+
+```text
+createdb -h 127.0.0.1 -p 5432 -U postgres --owner=postgres financeiq
+psql -X -h 127.0.0.1 -p 5432 -U postgres -d financeiq -v ON_ERROR_STOP=1 -f infra/postgres/bootstrap.sql
+psql -X -h 127.0.0.1 -p 5432 -U postgres -d financeiq
+```
+
+В последней интерактивной сессии задайте разные пароли без передачи в аргументах команд или сохранения в SQL:
+
+```text
+\password financeiq_migrator
+\password financeiq_runtime
+\q
+```
+
+`createdb` выполняется один раз. Bootstrap повторяем: его запускает владелец БД, он не пересоздает БД, не сбрасывает пароли и отклоняет несовместимые атрибуты ролей, владение runtime объектами и опасные существующие grants. Роли создаются без паролей и не доступны по password-auth до их отдельного назначения.
+
+| Роль | Разрешения |
+| --- | --- |
+| Администратор | Владелец БД, создание ролей и первоначальная настройка |
+| `financeiq_migrator` | Владелец `public` и создаваемых объектов; миграции; без superuser/CREATEDB/CREATEROLE/replication/bypass RLS |
+| `financeiq_runtime` | CONNECT и USAGE схемы; без владения, членства в других ролях, CREATE/TEMP, TRUNCATE и управления триггерами |
+
+Runtime не имеет доступа к `alembic_version`. Права SELECT/INSERT/UPDATE/DELETE на предметные таблицы выдаются явно по необходимости в миграциях этапа 2, без `ALL` и blanket default grants. Новые функции migrator не получают стандартный `PUBLIC EXECUTE`; нужные разрешения задаются явно. Проверки владельца ресурсов и scoped repositories остаются обязательными.
+
+Для приложения используйте `FINANCEIQ_DATABASE_URL` с `financeiq_runtime`. Для миграций — отдельный обязательный `FINANCEIQ_MIGRATION_DATABASE_URL` с `financeiq_migrator`; fallback на runtime URL отсутствует. `MigrationSettings` содержит только этот секрет; `load_migration_settings(*, env_file=None)` сохраняет те же правила валидации, приоритетов и безопасных ошибок, что и runtime-конфигурация.
+
+Скопируйте `.env.migrations.example` в `.env.migrations` и замените синтетические credentials. Специальные символы в URL кодируются через percent-encoding. Не объединяйте этот файл с runtime `.env`: каждый загрузчик отклоняет чужие ключи. Файл сам не обнаруживается; без `-x env_file=...` Alembic читает только окружение процесса. Переменная процесса имеет приоритет над файлом.
+
+Команды из `backend`:
+
+```powershell
+# PowerShell
+.\.venv\Scripts\python.exe -m alembic -x env_file=../.env.migrations upgrade head
+.\.venv\Scripts\python.exe -m alembic -x env_file=../.env.migrations current
+.\.venv\Scripts\python.exe -m alembic -x env_file=../.env.migrations check
+.\.venv\Scripts\python.exe -m alembic heads
+.\.venv\Scripts\python.exe -m alembic upgrade head --sql
+```
+
+```bash
+# Linux
+.venv/bin/python -m alembic -x env_file=../.env.migrations upgrade head
+.venv/bin/python -m alembic -x env_file=../.env.migrations current
+.venv/bin/python -m alembic -x env_file=../.env.migrations check
+.venv/bin/python -m alembic heads
+.venv/bin/python -m alembic upgrade head --sql
+```
+
+Текущая вершина — `0001`: техническая ревизия без предметных таблиц, создается только `alembic_version`. Offline `--sql` выводит DDL явно в stdout, без подключения или credentials. Online-ошибки конфигурации/подключения/DDL дают ненулевой код и фиксированное `Migration operation failed.` без SQL, параметров и исходной цепочки исключений. Режимы offline и online не настраивают root logging; собственные engine/pool логгеры отключены.
+
+Миграции используют `db.base.Base.metadata`, отдельный async engine с `NullPool`, `run_sync` и транзакционный DDL. Будущие ORM-модели должны наследовать этот `Base` и явно регистрироваться импортами в migration environment. Имена CHECK задаются явно; общий naming convention формирует имена остальных ограничений и индексов. Autogenerate создает заготовку для ручной проверки, включая необходимые grants и триггеры.
+
 ## Проверки backend
 
 Команды выполняются из `backend` после установки dev-окружения.
@@ -202,8 +262,8 @@ DB-граница возвращает безопасный `DatabaseError` бе
 # PowerShell
 .\.venv\Scripts\python.exe -m pip check
 .\.venv\Scripts\python.exe -m unittest discover -s tests/unit
-.\.venv\Scripts\python.exe -m ruff format --check src tests
-.\.venv\Scripts\python.exe -m ruff check src tests
+.\.venv\Scripts\python.exe -m ruff format --check src tests migrations
+.\.venv\Scripts\python.exe -m ruff check src tests migrations
 .\.venv\Scripts\python.exe -m mypy
 ```
 
@@ -211,14 +271,14 @@ DB-граница возвращает безопасный `DatabaseError` бе
 # Linux
 .venv/bin/python -m pip check
 .venv/bin/python -m unittest discover -s tests/unit
-.venv/bin/python -m ruff format --check src tests
-.venv/bin/python -m ruff check src tests
+.venv/bin/python -m ruff format --check src tests migrations
+.venv/bin/python -m ruff check src tests migrations
 .venv/bin/python -m mypy
 ```
 
-Тесты конфигурации, HTTP-приложения и DB-инфраструктуры используют стандартный `unittest`, включая `IsolatedAsyncioTestCase`, и совместимы с будущим pytest; HTTP проверяется через FastAPI `TestClient` и HTTPX. DB-взаимодействие подменяется; сервер PostgreSQL для этих тестов не нужен. Проверяются lifecycle, транзакции, отмены, ошибки commit/очистки и отсутствие SQL/секретов в ответах и логах. Проверки реального подключения, сохранения/rollback данных, отложенных ограничений, денежной точности и восстановления после ошибок перенесены в 1.8 вместе с настройкой pytest и изолированной PostgreSQL. Закрепленная в lock-файлах Starlette 1.10.0 поддерживает HTTPX, но выдает `StarletteDeprecationWarning` с рекомендацией HTTPX2; предупреждение не подавляется. Ruff проверяет форматирование и правила `E4`, `E7`, `E9`, `F`, `I`, `UP`, `B`, включая сортировку импортов; длина строки — 88, целевой Python — 3.14, preview выключен. mypy проверяет `src` в строгом режиме с официальным плагином `pydantic.mypy`, без глобального подавления отсутствующих импортов. Проверка типов тестов подключается в 1.8 вместе с настройкой pytest.
+Тесты конфигурации, HTTP-приложения и DB-инфраструктуры используют стандартный `unittest`, включая `IsolatedAsyncioTestCase`, и совместимы с будущим pytest; HTTP проверяется через FastAPI `TestClient` и HTTPX. DB-взаимодействие подменяется; сервер PostgreSQL для этих тестов не нужен. Проверяются lifecycle, транзакции, отмены, ошибки commit/очистки и отсутствие SQL/секретов в ответах и логах. Проверки реального подключения, сохранения/rollback данных, отложенных ограничений, денежной точности и восстановления после ошибок перенесены в 1.8 вместе с настройкой pytest и изолированной PostgreSQL. Закрепленная в lock-файлах Starlette 1.10.0 поддерживает HTTPX, но выдает `StarletteDeprecationWarning` с рекомендацией HTTPX2; предупреждение не подавляется. Ruff проверяет форматирование и правила `E4`, `E7`, `E9`, `F`, `I`, `UP`, `B`, включая сортировку импортов; длина строки — 88, целевой Python — 3.14, preview выключен. mypy проверяет `src` и `migrations` в строгом режиме с официальным плагином `pydantic.mypy`, без глобального подавления отсутствующих импортов. Проверка типов тестов подключается в 1.8 вместе с настройкой pytest.
 
-Для применения форматирования замените `ruff format --check src tests` на `ruff format src tests`. Безопасные исправления lint выполняются командой `ruff check --fix src tests`; после них повторите всю последовательность проверок. Настройки инструментов находятся в `pyproject.toml`.
+Для применения форматирования замените `ruff format --check src tests migrations` на `ruff format src tests migrations`. Безопасные исправления lint выполняются командой `ruff check --fix src tests migrations`; после них повторите всю последовательность проверок. Настройки инструментов находятся в `pyproject.toml`.
 
 Для сборки wheel из каталога `backend`:
 
@@ -231,6 +291,22 @@ DB-граница возвращает безопасный `DatabaseError` бе
 # Linux
 .venv/bin/python -m pip wheel --no-deps --no-build-isolation --wheel-dir dist .
 ```
+
+### Интеграционные проверки миграций 1.6
+
+Нужен доступный Docker Engine и образ PostgreSQL 18.7 (точный digest закреплен в тесте; при отсутствии Docker скачает его). Локальные PostgreSQL client tools и настроенные URL для этой проверки не требуются. Suite самостоятельно создает случайный контейнер с `--rm`, tmpfs, случайными тестовыми паролями и портом, опубликованным только на `127.0.0.1`; существующие БД не используются. При завершении контейнер останавливается и удаляется. Отсутствие Docker или ошибка подключения приводят к ошибке теста, а не к пропуску.
+
+```powershell
+# PowerShell, из backend
+.\.venv\Scripts\python.exe -m unittest discover -s tests/integration -p test_migrations.py -v
+```
+
+```bash
+# Linux, из backend
+.venv/bin/python -m unittest discover -s tests/integration -p test_migrations.py -v
+```
+
+Проверяются upgrade/current/check, повторный upgrade, downgrade/upgrade, единственная вершина, атомарный rollback ошибочного DDL, bootstrap и его несовместимые состояния, явный файл с URL-encoded паролем, безопасная диагностика, разрешенный DML с действующим тестовым триггером и запреты runtime на DDL/TEMP/TRUNCATE, отключение триггеров, смену роли и доступ к версии Alembic. Предметные таблицы и финансовые guards не создаются. Настройка pytest и перенесенные runtime-проверки 1.5 остаются в 1.8.
 
 ## Обновление зависимостей backend
 

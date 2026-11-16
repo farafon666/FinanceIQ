@@ -21,8 +21,8 @@ class ConfigurationError(RuntimeError):
     """Configuration failure whose message contains no input values."""
 
 
-class Settings(BaseSettings):
-    """An immutable settings snapshot; use load_settings for safe diagnostics."""
+class _SettingsBase(BaseSettings):
+    """Shared source validation, secret handling and safe diagnostics."""
 
     model_config = SettingsConfigDict(
         env_prefix=_ENV_PREFIX,
@@ -34,11 +34,7 @@ class Settings(BaseSettings):
         hide_input_in_errors=True,
     )
 
-    app_env: Literal["development", "test", "production"] = "development"
-    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
-    database_url: SecretStr = Field(repr=False)
-
-    @field_validator("database_url")
+    @field_validator("database_url", "migration_database_url", check_fields=False)
     @classmethod
     def validate_database_url(cls, value: SecretStr) -> SecretStr:
         raw = value.get_secret_value()
@@ -96,18 +92,43 @@ class Settings(BaseSettings):
         """
 
 
+class Settings(_SettingsBase):
+    """Runtime settings contain no migration credentials."""
+
+    app_env: Literal["development", "test", "production"] = "development"
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+    database_url: SecretStr = Field(repr=False)
+
+
+class MigrationSettings(_SettingsBase):
+    """Migration credentials are required independently of runtime settings."""
+
+    migration_database_url: SecretStr = Field(repr=False)
+
+
 def load_settings(*, env_file: Path | None = None) -> Settings:
     """Read process variables, an optional explicit UTF-8 file, then defaults.
 
     Relative paths use the working directory. No files are discovered, no global
     settings are cached, and neither os.environ nor logging is configured.
     """
+    return _load_settings(Settings, env_file=env_file)
+
+
+def load_migration_settings(*, env_file: Path | None = None) -> MigrationSettings:
+    """Load only migration configuration; never fall back to runtime credentials."""
+    return _load_settings(MigrationSettings, env_file=env_file)
+
+
+def _load_settings[T: _SettingsBase](
+    settings_type: type[T], *, env_file: Path | None
+) -> T:
     try:
         if env_file is not None and not env_file.is_file():
             raise ConfigurationError(
                 "The selected environment file is missing or is not a regular file."
             )
-        return Settings(_env_file=env_file)
+        return settings_type(_env_file=env_file)
     except ValidationError as error:
         errors = error.errors(
             include_input=False, include_context=False, include_url=False
@@ -119,7 +140,7 @@ def load_settings(*, env_file: Path | None = None) -> Settings:
                 for issue in errors
                 if issue["loc"]
                 and isinstance(issue["loc"][0], str)
-                and issue["loc"][0] in Settings.model_fields
+                and issue["loc"][0] in settings_type.model_fields
             }
         )
         message = "Invalid configuration."

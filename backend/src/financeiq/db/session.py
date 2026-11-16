@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 from uuid import uuid4
 
+from pydantic import SecretStr
 from sqlalchemy import event
 from sqlalchemy.engine import Dialect, ExceptionContext
 from sqlalchemy.engine.interfaces import DBAPIConnection
@@ -16,18 +17,28 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.pool import ConnectionPoolEntry
+from sqlalchemy.pool import AsyncAdaptedQueuePool, ConnectionPoolEntry, NullPool, Pool
 
-from financeiq.core.config import Settings
+from financeiq.core.config import MigrationSettings, Settings
 from financeiq.db.errors import DATABASE_EXCEPTIONS, DatabaseError, finish_cleanup
 
 
 def create_engine(settings: Settings) -> AsyncEngine:
     """Create a lazy engine with isolated, silenced raw engine/pool loggers."""
+    return _create_engine(settings.database_url, AsyncAdaptedQueuePool)
+
+
+def create_migration_engine(settings: MigrationSettings) -> AsyncEngine:
+    """Migration processes own independent connections without a retained pool."""
+    return _create_engine(settings.migration_database_url, NullPool)
+
+
+def _create_engine(database_url: SecretStr, poolclass: type[Pool]) -> AsyncEngine:
     name = f"financeiq_{uuid4().hex}"
     try:
         engine = create_async_engine(
-            settings.database_url.get_secret_value(),
+            database_url.get_secret_value(),
+            poolclass=poolclass,
             isolation_level="READ COMMITTED",
             pool_pre_ping=True,
             connect_args={"timeout": 5},
@@ -44,6 +55,7 @@ def create_engine(settings: Settings) -> AsyncEngine:
     for prefix in (
         "sqlalchemy.engine.Engine",
         "sqlalchemy.pool.impl.AsyncAdaptedQueuePool",
+        "sqlalchemy.pool.impl.NullPool",
     ):
         logging.getLogger(f"{prefix}.{name}").disabled = True
     event.listen(
