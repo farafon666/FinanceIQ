@@ -46,11 +46,14 @@ line-length = 88
 src = ["src"]
 preview = false
 
+[tool.ruff.per-file-target-version]
+"../infra/compose/setup.py" = "py311"
+
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
 
 [tool.mypy]
 python_version = "3.14"
 strict = true
-files = ["src", "migrations"]
+files = ["src", "migrations", "../infra/compose/setup.py"]
 plugins = ["pydantic.mypy"]

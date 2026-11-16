@@ -6,7 +6,7 @@ FinanceIQ — персональная веб-платформа для учет
 
 ## Текущий статус
 
-Этап 0 завершен 2026-11-02: согласованы продуктовые правила финансового фундамента, доменная модель, PostgreSQL-схема, матрица инвариантов и архитектура MVP (пакеты 0.13/0.14). По отдельным поручениям пользователя 2026-11-04 выполнены задачи 1.1–1.4: создан устанавливаемый каркас backend, закреплены версии Python и инструментов, настроены форматирование, lint, строгая проверка типов и конфигурация через переменные окружения с явным подключением `.env`, добавлено минимальное FastAPI-приложение с проверкой работоспособности. Установка, проверки и запуск HTTP-сервера выполнены на Windows x64 и Linux x86_64 с CPython 3.14.10; подробности — в ROADMAP. Остальные задачи этапа 1 выполняются по отдельным поручениям; этап 1 не завершен. В задаче 1.5 от 2026-11-05 добавлены asyncpg/SQLAlchemy, сессии на запрос, сервисные транзакции и безопасные DB-ошибки. Чистая установка и 59 unit-тестов проверены на Windows/Linux; PostgreSQL не запускалась по согласованной границе приемки. Перенесенные проверки 1.5 остаются в 1.8. В 1.6 от 2026-11-16 добавлены Alembic и отдельные роли миграций/runtime, проверенные на одноразовой PostgreSQL 18.7. Предметные таблицы и Docker Compose еще не реализованы. Детали Auth D-12 и прогноза D-11 остаются на своих контрольных точках.
+Этап 0 завершен 2026-11-02: согласованы продуктовые правила финансового фундамента, доменная модель, PostgreSQL-схема, матрица инвариантов и архитектура MVP (пакеты 0.13/0.14). По отдельным поручениям пользователя 2026-11-04 выполнены задачи 1.1–1.4: создан устанавливаемый каркас backend, закреплены версии Python и инструментов, настроены форматирование, lint, строгая проверка типов и конфигурация через переменные окружения с явным подключением `.env`, добавлено минимальное FastAPI-приложение с проверкой работоспособности. Установка, проверки и запуск HTTP-сервера выполнены на Windows x64 и Linux x86_64 с CPython 3.14.10; подробности — в ROADMAP. Остальные задачи этапа 1 выполняются по отдельным поручениям; этап 1 не завершен. В задаче 1.5 от 2026-11-05 добавлены asyncpg/SQLAlchemy, сессии на запрос, сервисные транзакции и безопасные DB-ошибки. Чистая установка и 59 unit-тестов проверены на Windows/Linux; PostgreSQL не запускалась по согласованной границе приемки. Перенесенные проверки 1.5 остаются в 1.8. В 1.6 от 2026-11-16 добавлены Alembic и отдельные роли миграций/runtime, проверенные на одноразовой PostgreSQL 18.7. В 1.7 от 2026-11-16 добавлено локальное окружение Docker Compose с отдельным migrator, файловыми secrets и проверками готовности. Предметные таблицы еще не реализованы. Детали Auth D-12 и прогноза D-11 остаются на своих контрольных точках.
 
 ## Планируемые возможности MVP
 
@@ -186,6 +186,72 @@ ReDoc, OAuth redirect Swagger и непрефиксированные `/docs`, `
 
 В программном примере уровень логов Uvicorn берется из `Settings.log_level`. При запуске через CLI уровень задается параметром Uvicorn `--log-level` (по умолчанию `info`); `FINANCEIQ_LOG_LEVEL` самостоятельно logging не настраивает. Остановка сервера — Ctrl+C.
 
+## Локальное окружение Docker Compose
+
+Нужны Docker Engine с Linux-контейнерами, Docker Compose с поддержкой `up --wait` и Python 3.11+ для подготовки секретов. Локальная установка backend и PostgreSQL client tools для этого запуска не требуются. Используются закрепленные по digest Python 3.14.10 и PostgreSQL 18.7. Образ backend предназначен для локальной разработки и устанавливает существующий Linux dev lock с SHA-256; он включает инструменты проверок.
+
+Из корня репозитория:
+
+```powershell
+# PowerShell; существующие локальные настройки не перезаписываются.
+if (-not (Test-Path -LiteralPath .env.compose)) { Copy-Item .env.compose.example .env.compose }
+python infra/compose/setup.py
+docker compose --env-file .env.compose config --quiet
+docker compose --env-file .env.compose up --build --wait --wait-timeout 180
+Invoke-RestMethod http://127.0.0.1:8000/api/v1/health
+```
+
+```bash
+# Linux
+test -e .env.compose || cp .env.compose.example .env.compose
+python3 infra/compose/setup.py
+docker compose --env-file .env.compose config --quiet
+docker compose --env-file .env.compose up --build --wait --wait-timeout 180
+curl --fail http://127.0.0.1:8000/api/v1/health
+```
+
+`.env.compose` используется только для подстановок Compose: `FINANCEIQ_BACKEND_PORT=8000`, `FINANCEIQ_POSTGRES_PORT=5432`, `FINANCEIQ_SECRETS_DIR=./.secrets/compose`. При занятых портах измените их в этом файле; публикация остается только на `127.0.0.1`. Из контейнеров PostgreSQL доступна как `postgres:5432`, независимо от порта хоста. `.env.compose` не передается загрузчикам приложения или Alembic. Существующие `.env` и `.env.migrations` используются только при отдельном запуске backend/миграций на хосте.
+
+Скрипт создает три разных пароля в `.secrets/compose`: `postgres_password`, `migrator_password`, `runtime_password`. Повторный запуск сохраняет весь существующий комплект; неполный, пустой или недоступный комплект приводит к безопасному отказу. При другом `FINANCEIQ_SECRETS_DIR` укажите тот же каталог через `python infra/compose/setup.py --directory <directory>`. Секреты не выводятся, не попадают в Git или Docker build context. В Linux каталог создается с `0700`, файлы — с `0444`: каталог защищает доступ на хосте, отдельные read-only mounts читаются непривилегированными процессами контейнеров. На Windows доступ на хосте определяется ACL каталога; атрибуты `uid/gid/mode` файловых secrets в Compose не заменяют эти права.
+
+| Сервис | Назначение и доступ |
+| --- | --- |
+| `postgres` | Администратор `postgres` владеет БД; имеет три файла паролей для первичной настройки |
+| `migrate` | Одноразовый `alembic upgrade head`, только секрет `financeiq_migrator` |
+| `backend` | Один процесс Uvicorn от UID 10001, только секрет `financeiq_runtime` |
+
+Первый запуск пустого volume выполняет существующий bootstrap и задает пароли через `psql \password`, подавая их в stdin. PostgreSQL использует SCRAM для TCP-подключений. Миграции ожидают успешный TCP `pg_isready`; API запускается после успешных миграций. Контейнерный адаптер `python -m financeiq.core.container` поддерживает `serve`, `migrate [alembic arguments]` и `ready`; читает только секрет своей роли и формирует URL без передачи пароля через аргументы команд. Обычные `Settings` и HTTP-фабрика сохраняют прежние интерфейсы.
+
+Healthcheck backend проверяет HTTP (timeout 2 секунды) и `SELECT 1` через runtime engine (DB timeout 5 секунд), затем освобождает ресурсы. Интервал — 5 секунд, timeout контейнера — 10 секунд, 6 неудач дают `unhealthy`. Публичный `/api/v1/health` остается liveness без обращения к БД: при остановке PostgreSQL он может отвечать `{"status":"ok"}`, хотя контейнер backend уже `unhealthy`. Состояние `unhealthy` само по себе не перезапускает контейнер; после восстановления БД проверка повторяется автоматически.
+
+Основные команды из корня, одинаковые для PowerShell и Linux:
+
+```text
+docker compose --env-file .env.compose ps --all
+docker compose --env-file .env.compose logs --tail 100
+docker compose --env-file .env.compose run --rm migrate migrate current
+docker compose --env-file .env.compose run --rm migrate migrate check
+docker compose --env-file .env.compose exec -T backend python -m financeiq.core.container ready
+docker compose --env-file .env.compose down
+```
+
+Изменения исходников применяются повторным `up --build --wait --wait-timeout 180`. Автоперезагрузка и монтирование исходников отключены. Обычный `down` сохраняет именованный volume, смонтированный в `/var/lib/postgresql`; контейнеры не настроены на автоматический запуск после перезапуска Docker. Команда `restart` не заменяет применение миграций через `up`.
+
+### Существующий volume и восстановление
+
+Init-скрипты выполняются только на пустом volume. Повторный запуск не меняет пароли, а изменение файлов secrets не обновляет credentials существующей БД. Неверный пароль migrator останавливает запуск до API; неверный runtime-пароль приводит к `unhealthy` backend.
+
+При утраченном файле сначала восстановите его из защищенной локальной копии. Не генерируйте новый комплект поверх существующей БД. Если пароли намеренно изменены или первичная инициализация прервалась, сохраните доступный комплект и явно повторите административную настройку:
+
+```text
+docker compose --env-file .env.compose stop backend
+docker compose --env-file .env.compose up -d postgres
+docker compose --env-file .env.compose exec -T postgres bash /docker-entrypoint-initdb.d/10-financeiq.sh
+docker compose --env-file .env.compose up --build --wait --wait-timeout 180
+```
+
+Команда настройки повторяет проверяемый bootstrap и **устанавливает оба пароля прикладных ролей из текущих файлов**, сохраняя данные. Административный пароль PostgreSQL она не меняет. Для его изменения используйте `docker compose --env-file .env.compose exec postgres psql -X -U postgres -d financeiq`, затем интерактивную `\password postgres`; файл `postgres_password` должен соответствовать назначенному паролю. Если bootstrap отвергает несовместимые права или владение, требуется административное исправление согласно разделу миграций. Автоматического удаления volume нет; `down --volumes` удаляет данные и не является способом обычного восстановления. Самостоятельное управление этим локальным volume не заменяет будущие резервные копии.
+
 ## Сессии и транзакции БД
 
 FastAPI lifespan создает отдельные `app.state.engine` и `app.state.session_factory` для каждого приложения и освобождает движок через `await engine.dispose()` при остановке. Импорт модулей и вызов `create_app()` не создают движок. Подключение ленивое: первый DB-запрос получает соединение. Корректный URL требуется даже для health, но доступность сервера PostgreSQL при запуске и в health не проверяется.
@@ -262,8 +328,8 @@ Runtime не имеет доступа к `alembic_version`. Права SELECT/I
 # PowerShell
 .\.venv\Scripts\python.exe -m pip check
 .\.venv\Scripts\python.exe -m unittest discover -s tests/unit
-.\.venv\Scripts\python.exe -m ruff format --check src tests migrations
-.\.venv\Scripts\python.exe -m ruff check src tests migrations
+.\.venv\Scripts\python.exe -m ruff format --check src tests migrations ../infra/compose
+.\.venv\Scripts\python.exe -m ruff check src tests migrations ../infra/compose
 .\.venv\Scripts\python.exe -m mypy
 ```
 
@@ -271,14 +337,14 @@ Runtime не имеет доступа к `alembic_version`. Права SELECT/I
 # Linux
 .venv/bin/python -m pip check
 .venv/bin/python -m unittest discover -s tests/unit
-.venv/bin/python -m ruff format --check src tests migrations
-.venv/bin/python -m ruff check src tests migrations
+.venv/bin/python -m ruff format --check src tests migrations ../infra/compose
+.venv/bin/python -m ruff check src tests migrations ../infra/compose
 .venv/bin/python -m mypy
 ```
 
-Тесты конфигурации, HTTP-приложения и DB-инфраструктуры используют стандартный `unittest`, включая `IsolatedAsyncioTestCase`, и совместимы с будущим pytest; HTTP проверяется через FastAPI `TestClient` и HTTPX. DB-взаимодействие подменяется; сервер PostgreSQL для этих тестов не нужен. Проверяются lifecycle, транзакции, отмены, ошибки commit/очистки и отсутствие SQL/секретов в ответах и логах. Проверки реального подключения, сохранения/rollback данных, отложенных ограничений, денежной точности и восстановления после ошибок перенесены в 1.8 вместе с настройкой pytest и изолированной PostgreSQL. Закрепленная в lock-файлах Starlette 1.10.0 поддерживает HTTPX, но выдает `StarletteDeprecationWarning` с рекомендацией HTTPX2; предупреждение не подавляется. Ruff проверяет форматирование и правила `E4`, `E7`, `E9`, `F`, `I`, `UP`, `B`, включая сортировку импортов; длина строки — 88, целевой Python — 3.14, preview выключен. mypy проверяет `src` и `migrations` в строгом режиме с официальным плагином `pydantic.mypy`, без глобального подавления отсутствующих импортов. Проверка типов тестов подключается в 1.8 вместе с настройкой pytest.
+Тесты конфигурации, HTTP-приложения и DB-инфраструктуры используют стандартный `unittest`, включая `IsolatedAsyncioTestCase`, и совместимы с будущим pytest; HTTP проверяется через FastAPI `TestClient` и HTTPX. DB-взаимодействие подменяется; сервер PostgreSQL для этих тестов не нужен. Проверяются lifecycle, транзакции, отмены, ошибки commit/очистки и отсутствие SQL/секретов в ответах и логах. Проверки реального подключения, сохранения/rollback данных, отложенных ограничений, денежной точности и восстановления после ошибок перенесены в 1.8 вместе с настройкой pytest и изолированной PostgreSQL. Закрепленная в lock-файлах Starlette 1.10.0 поддерживает HTTPX, но выдает `StarletteDeprecationWarning` с рекомендацией HTTPX2; предупреждение не подавляется. Ruff проверяет форматирование и правила `E4`, `E7`, `E9`, `F`, `I`, `UP`, `B`, включая сортировку импортов; длина строки — 88, целевой Python — 3.14, для отдельного `infra/compose/setup.py` — 3.11, preview выключен. mypy проверяет `src`, `migrations` и скрипт подготовки Compose в строгом режиме с официальным плагином `pydantic.mypy`, без глобального подавления отсутствующих импортов. Проверка типов тестов подключается в 1.8 вместе с настройкой pytest.
 
-Для применения форматирования замените `ruff format --check src tests migrations` на `ruff format src tests migrations`. Безопасные исправления lint выполняются командой `ruff check --fix src tests migrations`; после них повторите всю последовательность проверок. Настройки инструментов находятся в `pyproject.toml`.
+Для применения форматирования замените `ruff format --check src tests migrations ../infra/compose` на `ruff format src tests migrations ../infra/compose`. Безопасные исправления lint выполняются командой `ruff check --fix src tests migrations ../infra/compose`; после них повторите всю последовательность проверок. Настройки инструментов находятся в `pyproject.toml`.
 
 Для сборки wheel из каталога `backend`:
 
@@ -307,6 +373,20 @@ Runtime не имеет доступа к `alembic_version`. Права SELECT/I
 ```
 
 Проверяются upgrade/current/check, повторный upgrade, downgrade/upgrade, единственная вершина, атомарный rollback ошибочного DDL, bootstrap и его несовместимые состояния, явный файл с URL-encoded паролем, безопасная диагностика, разрешенный DML с действующим тестовым триггером и запреты runtime на DDL/TEMP/TRUNCATE, отключение триггеров, смену роли и доступ к версии Alembic. Предметные таблицы и финансовые guards не создаются. Настройка pytest и перенесенные runtime-проверки 1.5 остаются в 1.8.
+
+### Интеграционная проверка Compose 1.7
+
+Из `backend` с установленным dev-окружением и доступным Docker:
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests/integration -p test_compose.py -v
+```
+
+```bash
+.venv/bin/python -m unittest discover -s tests/integration -p test_compose.py -v
+```
+
+Тест собирает образ и создает случайный Compose-проект, секреты в собственном подкаталоге `.secrets`, динамические порты и отдельный volume. Проверяются миграции, HTTP/readiness, непривилегированный пользователь и разделение secrets, повторный запуск, пересоздание контейнеров, сохранение синтетических данных после `down/up`, остановка/восстановление БД, блокировка API при неверном migration-пароле и явное восстановление паролей без потери данных. Проверяются диагностика и отсутствие credentials в образе/Compose-конфигурации. В конце удаляются только ресурсы этого тестового проекта и его секреты; существующее локальное окружение не используется. Отсутствие Docker приводит к ошибке, не пропуску. Проверки транзакций, точности денежных значений и отложенных ограничений остаются в 1.8.
 
 ## Обновление зависимостей backend
 

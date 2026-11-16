@@ -6,6 +6,8 @@
 .env.*
 !.env.example
 !.env.migrations.example
+!.env.compose.example
+.secrets/
 
 # Python backend
 backend/.venv/

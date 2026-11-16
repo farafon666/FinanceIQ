@@ -1,0 +1,19 @@
+# Allow only build inputs; secrets, local environments, tests and caches stay out.
+**
+!backend/
+!backend/pyproject.toml
+!backend/requirements/
+!backend/requirements/dev-linux-py314.txt
+!backend/src/
+!backend/src/**
+!backend/alembic.ini
+!backend/migrations/
+!backend/migrations/**
+!infra/
+!infra/backend/
+!infra/backend/Dockerfile
+**/.env
+**/.env.*
+**/.secrets/
+**/__pycache__/
+**/*.py[cod]

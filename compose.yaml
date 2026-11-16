@@ -1,0 +1,73 @@
+x-backend: &backend
+  image: ${COMPOSE_PROJECT_NAME:-financeiq}-backend:local
+  build:
+    context: .
+    dockerfile: infra/backend/Dockerfile
+
+services:
+  postgres:
+    image: postgres:18.7@sha256:2ea8630df176ad090ec92136dee850397c5af8781e4bcf2e4162593691c61bbc
+    environment:
+      POSTGRES_DB: financeiq
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    ports:
+      - "127.0.0.1:${FINANCEIQ_POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+      - ./infra/postgres/bootstrap.sql:/opt/financeiq/bootstrap.sql:ro
+      - ./infra/postgres/init-compose.sh:/docker-entrypoint-initdb.d/10-financeiq.sh:ro
+    secrets:
+      - postgres_password
+      - migrator_password
+      - runtime_password
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "financeiq"]
+      interval: 5s
+      timeout: 3s
+      start_period: 30s
+      retries: 12
+
+  migrate:
+    <<: *backend
+    command: ["migrate", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    secrets:
+      - migrator_password
+
+  backend:
+    <<: *backend
+    init: true
+    command: ["serve"]
+    environment:
+      FINANCEIQ_APP_ENV: development
+      FINANCEIQ_LOG_LEVEL: INFO
+    ports:
+      - "127.0.0.1:${FINANCEIQ_BACKEND_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    secrets:
+      - runtime_password
+    healthcheck:
+      test: ["CMD", "python", "-m", "financeiq.core.container", "ready"]
+      interval: 5s
+      timeout: 10s
+      start_period: 15s
+      retries: 6
+
+volumes:
+  postgres_data:
+
+secrets:
+  postgres_password:
+    file: ${FINANCEIQ_SECRETS_DIR:-./.secrets/compose}/postgres_password
+  migrator_password:
+    file: ${FINANCEIQ_SECRETS_DIR:-./.secrets/compose}/migrator_password
+  runtime_password:
+    file: ${FINANCEIQ_SECRETS_DIR:-./.secrets/compose}/runtime_password
