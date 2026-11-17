@@ -35,7 +35,7 @@ class MigrationConfigurationTests(unittest.TestCase):
         for rendered in (str(settings), repr(settings), settings.model_dump_json()):
             self.assertNotIn("secret-sentinel", rendered)
         with self.assertRaises(ValueError):
-            settings.migration_database_url = self.url
+            settings.__setattr__("migration_database_url", self.url)
         os.environ["FINANCEIQ_MIGRATION_DATABASE_URL"] = self.url.replace(
             "localhost", "127.0.0.1"
         )

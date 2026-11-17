@@ -3,10 +3,12 @@
 import os
 import traceback
 import unittest
+from collections.abc import Sequence
 from unittest.mock import AsyncMock, patch
 
 from asyncpg import InterfaceError, InvalidPasswordError
 from fastapi.testclient import TestClient
+from httpx import Response
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -151,7 +153,7 @@ class DatabaseApplicationTests(unittest.TestCase):
             "secret-sentinel", "".join(traceback.format_exception(caught.exception))
         )
 
-    def assert_safe_response(self, response, logs) -> None:
+    def assert_safe_response(self, response: Response, logs: Sequence[str]) -> None:
         self.assertEqual(response.status_code, 500)
         self.assertEqual(response.json(), {"detail": "Database operation failed."})
         rendered = response.text + "\n".join(logs)

@@ -226,13 +226,17 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         for method in ("rollback", "close"):
             with self.subTest(method=method):
                 session = AsyncSession(autobegin=False)
+
+                def factory(current: AsyncSession = session) -> AsyncSession:
+                    return current
+
                 with (
                     patch.object(
                         session, method, new=AsyncMock(side_effect=OSError(SENTINEL))
                     ),
                     self.assertRaises(DatabaseError) as caught,
                 ):
-                    async with session_scope(lambda session=session: session):
+                    async with session_scope(factory):
                         async with transaction(session):
                             raise ValueError("business failure")
                 self.assert_safe(caught.exception)

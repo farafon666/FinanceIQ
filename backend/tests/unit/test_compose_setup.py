@@ -13,7 +13,7 @@ FILES = ("postgres_password", "migrator_password", "runtime_password")
 
 
 class ComposeSetupTests(unittest.TestCase):
-    def prepare(self, directory):
+    def prepare(self, directory: Path) -> subprocess.CompletedProcess[str]:
         command = [sys.executable, str(SETUP), "--directory", str(directory)]
         if os.name != "nt":
             command = [
@@ -30,7 +30,7 @@ class ComposeSetupTests(unittest.TestCase):
             timeout=10,
         )
 
-    def test_create_distinct_secrets_and_repeat_without_replacing(self):
+    def test_create_distinct_secrets_and_repeat_without_replacing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary) / "secrets"
             first = self.prepare(directory)
@@ -52,7 +52,7 @@ class ComposeSetupTests(unittest.TestCase):
                         stat.S_IMODE((directory / name).stat().st_mode), 0o444
                     )
 
-    def test_partial_or_empty_set_fails_without_modification(self):
+    def test_partial_or_empty_set_fails_without_modification(self) -> None:
         for value in ("secret-sentinel", ""):
             with self.subTest(value=bool(value)), tempfile.TemporaryDirectory() as tmp:
                 directory = Path(tmp)
@@ -67,7 +67,7 @@ class ComposeSetupTests(unittest.TestCase):
                 self.assertNotIn("Traceback", result.stdout + result.stderr)
                 self.assertIn("Secret preparation failed.", result.stderr)
 
-    def test_invalid_complete_set_is_rejected(self):
+    def test_invalid_complete_set_is_rejected(self) -> None:
         for values in (("", "a", "b"), ("same", "same", "same")):
             with self.subTest(values=values), tempfile.TemporaryDirectory() as tmp:
                 directory = Path(tmp)

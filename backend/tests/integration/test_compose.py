@@ -9,17 +9,28 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from typing import Any, ClassVar
 from uuid import uuid4
 
 import httpx
+import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
+pytestmark = pytest.mark.compose
+
 SECRET_NAMES = ("postgres_password", "migrator_password", "runtime_password")
 
 
 class ComposeIntegrationTests(unittest.TestCase):
+    project: ClassVar[str]
+    temporary: ClassVar[tempfile.TemporaryDirectory[str]]
+    directory: ClassVar[Path]
+    passwords: ClassVar[dict[str, str]]
+    sensitive_values: ClassVar[list[str]]
+    environment: ClassVar[dict[str, str]]
+
     @classmethod
-    def setUpClass(cls):
+    def setUpClass(cls) -> None:
         cls.project = f"financeiq-compose-test-{uuid4().hex}"
         secret_root = ROOT / ".secrets"
         secret_root.mkdir(exist_ok=True)
@@ -62,7 +73,9 @@ class ComposeIntegrationTests(unittest.TestCase):
         cls.compose("build", timeout=600)
 
     @classmethod
-    def docker(cls, *arguments, check=True, timeout=120):
+    def docker(
+        cls, *arguments: str, check: bool = True, timeout: int = 120
+    ) -> subprocess.CompletedProcess[str]:
         result = subprocess.run(
             ["docker", *arguments],
             cwd=ROOT,
@@ -82,7 +95,9 @@ class ComposeIntegrationTests(unittest.TestCase):
         return result
 
     @classmethod
-    def compose(cls, *arguments, **options):
+    def compose(
+        cls, *arguments: str, check: bool = True, timeout: int = 120
+    ) -> subprocess.CompletedProcess[str]:
         return cls.docker(
             "compose",
             "--project-name",
@@ -92,23 +107,30 @@ class ComposeIntegrationTests(unittest.TestCase):
             "--file",
             str(ROOT / "compose.yaml"),
             *arguments,
-            **options,
+            check=check,
+            timeout=timeout,
         )
 
     @classmethod
-    def cleanup_project(cls):
+    def cleanup_project(cls) -> None:
         if not cls.project.startswith("financeiq-compose-test-"):
             raise RuntimeError("Refusing cleanup of an unrelated Compose project.")
         cls.compose("down", "--volumes", "--remove-orphans")
         cls.docker("image", "rm", f"{cls.project}-backend:local", check=False)
 
-    def state(self, service):
+    def state(self, service: str) -> dict[str, Any] | None:
         identifier = self.compose("ps", "--all", "--quiet", service).stdout.strip()
         if not identifier:
             return None
-        return json.loads(self.docker("inspect", identifier).stdout)[0]
+        state: dict[str, Any] = json.loads(self.docker("inspect", identifier).stdout)[0]
+        return state
 
-    def wait_health(self, service, expected, timeout=90):
+    def required_state(self, service: str) -> dict[str, Any]:
+        state = self.state(service)
+        assert state is not None, f"Missing service: {service}"
+        return state
+
+    def wait_health(self, service: str, expected: str, timeout: int = 90) -> None:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             state = self.state(service)
@@ -117,15 +139,15 @@ class ComposeIntegrationTests(unittest.TestCase):
             time.sleep(1)
         self.fail(f"{service} did not become {expected}.")
 
-    def up(self):
+    def up(self) -> None:
         self.compose("up", "--wait", "--wait-timeout", "180", timeout=240)
 
-    def health_url(self):
+    def health_url(self) -> str:
         address = self.compose("port", "backend", "8000").stdout.strip()
         self.assertTrue(address.startswith("127.0.0.1:"))
         return f"http://{address}/api/v1/health"
 
-    def sql(self, statement):
+    def sql(self, statement: str) -> str:
         return self.compose(
             "exec",
             "-T",
@@ -142,16 +164,18 @@ class ComposeIntegrationTests(unittest.TestCase):
             statement,
         ).stdout.strip()
 
-    def replace_secret(self, name, value):
+    def replace_secret(self, name: str, value: str) -> None:
         path = self.directory / name
         path.chmod(stat.S_IRUSR | stat.S_IWUSR)
         path.write_text(value, encoding="utf-8")
         path.chmod(0o444)
 
-    def test_lifecycle_readiness_persistence_and_migration_failure(self):
+    def test_lifecycle_readiness_persistence_and_migration_failure(self) -> None:
         self.up()
-        self.assertEqual(self.state("migrate")["State"]["ExitCode"], 0)
-        self.assertEqual(self.state("backend")["State"]["Health"]["Status"], "healthy")
+        self.assertEqual(self.required_state("migrate")["State"]["ExitCode"], 0)
+        self.assertEqual(
+            self.required_state("backend")["State"]["Health"]["Status"], "healthy"
+        )
         with httpx.Client(trust_env=False) as client:
             response = client.get(self.health_url(), timeout=5)
             self.assertEqual(response.status_code, 200)
@@ -166,7 +190,7 @@ class ComposeIntegrationTests(unittest.TestCase):
             ("backend", "runtime_password"),
             ("migrate", "migrator_password"),
         ):
-            state = self.state(service)
+            state = self.required_state(service)
             self.assertEqual(state["Config"]["User"], "10001:10001")
             self.assertEqual(
                 {mount["Destination"] for mount in state["Mounts"]},
@@ -224,7 +248,7 @@ class ComposeIntegrationTests(unittest.TestCase):
         self.replace_secret("migrator_password", "wrong-password-sentinel")
         failed = self.compose("up", "--wait", "--wait-timeout", "60", check=False)
         self.assertNotEqual(failed.returncode, 0)
-        self.assertNotEqual(self.state("migrate")["State"]["ExitCode"], 0)
+        self.assertNotEqual(self.required_state("migrate")["State"]["ExitCode"], 0)
         backend = self.state("backend")
         self.assertTrue(backend is None or not backend["State"]["Running"])
         self.compose("logs", "--no-color")

@@ -15,7 +15,7 @@ from financeiq.core.config import Settings
 
 
 class ContainerCommandTests(unittest.TestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.directory = Path(temporary.name)
@@ -26,10 +26,10 @@ class ContainerCommandTests(unittest.TestCase):
         self.secret_patch.start()
         self.addCleanup(self.secret_patch.stop)
 
-    def test_serve_uses_only_runtime_credentials_and_executes_uvicorn(self):
+    def test_serve_uses_only_runtime_credentials_and_executes_uvicorn(self) -> None:
         with (
             patch.dict(os.environ, FINANCEIQ_MIGRATION_DATABASE_URL="foreign-secret"),
-            patch.object(container.os, "execve") as execute,
+            patch("financeiq.core.container.os.execve") as execute,
         ):
             self.assertEqual(container.main(["serve"]), 0)
         _, arguments, environment = execute.call_args.args
@@ -45,10 +45,10 @@ class ContainerCommandTests(unittest.TestCase):
         self.assertNotIn("FINANCEIQ_MIGRATION_DATABASE_URL", environment)
         self.assertNotIn(self.password, " ".join(arguments))
 
-    def test_migrate_uses_only_migrator_and_preserves_alembic_arguments(self):
+    def test_migrate_uses_only_migrator_and_preserves_alembic_arguments(self) -> None:
         with (
             patch.dict(os.environ, FINANCEIQ_DATABASE_URL="foreign-secret"),
-            patch.object(container.os, "execve") as execute,
+            patch("financeiq.core.container.os.execve") as execute,
         ):
             self.assertEqual(container.main(["migrate", "current"]), 0)
         _, arguments, environment = execute.call_args.args
@@ -58,7 +58,7 @@ class ContainerCommandTests(unittest.TestCase):
         self.assertEqual(url.password, self.password)
         self.assertNotIn("FINANCEIQ_DATABASE_URL", environment)
 
-    def test_missing_empty_invalid_or_unreadable_secret_fails_safely(self):
+    def test_missing_empty_invalid_or_unreadable_secret_fails_safely(self) -> None:
         secret = self.directory / "runtime_password"
         for content in (None, b"", b"secret-sentinel\nsecond-line", b"\xff"):
             with self.subTest(content=content):
@@ -69,7 +69,7 @@ class ContainerCommandTests(unittest.TestCase):
                 output = io.StringIO()
                 with (
                     redirect_stderr(output),
-                    patch.object(container.os, "execve") as run,
+                    patch("financeiq.core.container.os.execve") as run,
                 ):
                     self.assertEqual(container.main(["serve"]), 1)
                 run.assert_not_called()
@@ -83,13 +83,13 @@ class ContainerCommandTests(unittest.TestCase):
             self.assertEqual(container.main(["serve"]), 1)
         self.assertEqual(output.getvalue(), "Container command failed.\n")
 
-    def test_readiness_checks_http_and_database_without_exec(self):
+    def test_readiness_checks_http_and_database_without_exec(self) -> None:
         with (
             patch.object(container, "check_http") as http,
             patch.object(
                 container, "check_database", new_callable=AsyncMock
             ) as database,
-            patch.object(container.os, "execve") as execute,
+            patch("financeiq.core.container.os.execve") as execute,
         ):
             self.assertEqual(container.main(["ready"]), 0)
         http.assert_called_once_with()
@@ -101,7 +101,7 @@ class ContainerCommandTests(unittest.TestCase):
         )
         execute.assert_not_called()
 
-    def test_readiness_failures_hide_original_errors(self):
+    def test_readiness_failures_hide_original_errors(self) -> None:
         for boundary in ("check_http", "check_database"):
             with (
                 self.subTest(boundary=boundary),
@@ -117,7 +117,7 @@ class ContainerCommandTests(unittest.TestCase):
                     self.assertEqual(container.main(["ready"]), 1)
                 self.assertEqual(output.getvalue(), "Container command failed.\n")
 
-    def test_http_probe_validates_status_body_and_closes_connection(self):
+    def test_http_probe_validates_status_body_and_closes_connection(self) -> None:
         for status, body, accepted in (
             (200, b'{"status":"ok"}', True),
             (500, b'{"status":"ok"}', False),
@@ -138,7 +138,7 @@ class ContainerCommandTests(unittest.TestCase):
 
 
 class DatabaseReadinessTests(unittest.IsolatedAsyncioTestCase):
-    async def test_connection_is_released_on_success_and_failure(self):
+    async def test_connection_is_released_on_success_and_failure(self) -> None:
         settings = Settings(database_url="postgresql+asyncpg://r:unused@localhost/f")
         for fail in (False, True):
             with self.subTest(fail=fail):

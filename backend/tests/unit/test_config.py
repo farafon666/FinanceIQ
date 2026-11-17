@@ -215,7 +215,7 @@ class ConfigurationTests(unittest.TestCase):
     def test_settings_are_immutable(self) -> None:
         settings = load_settings()
         with self.assertRaises(ValueError):
-            settings.app_env = "production"
+            settings.__setattr__("app_env", "production")
         self.assertEqual(settings.app_env, "development")
 
     def test_loading_does_not_configure_logging(self) -> None:

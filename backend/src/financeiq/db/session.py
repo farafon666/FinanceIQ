@@ -85,8 +85,12 @@ def _unexpected_driver_error(context: ExceptionContext) -> Exception | None:
         return None
     # Drivers can raise ValueError/TypeError for connection options. Sanitize
     # these at the SQL execution boundary without hiding service ValueErrors.
-    # Known DB exceptions remain available for domain handling inside services.
-    if isinstance(context.original_exception, DATABASE_EXCEPTIONS):
+    # asyncpg's adapted DBAPI errors need not inherit asyncpg/SQLAlchemy errors.
+    # Preserve SQLAlchemy's wrapper and disconnect flag so pre-ping can replace
+    # a closed pooled connection. Service/session boundaries still sanitize it.
+    if context.sqlalchemy_exception is not None or isinstance(
+        context.original_exception, DATABASE_EXCEPTIONS
+    ):
         return None
     return DatabaseError()
 
