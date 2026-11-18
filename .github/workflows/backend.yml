@@ -1,0 +1,143 @@
+name: Backend CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+    working-directory: backend
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONUTF8: "1"
+
+jobs:
+  checks:
+    name: Backend checks (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Linux
+            runner: ubuntu-24.04
+            lock: dev-linux-py314.txt
+            python: .venv/bin/python
+          - platform: Windows
+            runner: windows-2025
+            lock: dev-windows-py314.txt
+            python: .venv/Scripts/python.exe
+    env:
+      VENV_PYTHON: ${{ matrix.python }}
+      LOCK_FILE: ${{ matrix.lock }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version-file: backend/.python-version
+          architecture: x64
+          cache: pip
+          cache-dependency-path: backend/requirements/${{ matrix.lock }}
+      - name: Install locked dependencies and backend
+        run: |
+          python -m venv .venv
+          "$VENV_PYTHON" -m pip install --require-hashes -r "requirements/$LOCK_FILE"
+          "$VENV_PYTHON" -m pip install --no-deps --no-build-isolation -e .
+      - name: Check dependencies
+        run: '"$VENV_PYTHON" -m pip check'
+      - name: Check formatting
+        run: '"$VENV_PYTHON" -m ruff format --check src tests migrations ../infra/compose'
+      - name: Lint
+        run: '"$VENV_PYTHON" -m ruff check src tests migrations ../infra/compose'
+      - name: Check types
+        run: '"$VENV_PYTHON" -m mypy'
+      - name: Run unit tests
+        run: '"$VENV_PYTHON" -m pytest'
+      - name: Build and check installed wheel
+        run: |
+          "$VENV_PYTHON" -m pip wheel --no-deps --no-build-isolation --wheel-dir dist .
+          "$VENV_PYTHON" - <<'PY'
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          wheels = list(Path("dist").glob("financeiq_backend-*.whl"))
+          if len(wheels) != 1:
+              raise SystemExit("Expected exactly one backend wheel.")
+          subprocess.run(
+              [sys.executable, "-m", "pip", "install", "--no-deps",
+               "--force-reinstall", str(wheels[0])],
+              check=True,
+          )
+          PY
+          "$VENV_PYTHON" -m pip check
+          "$VENV_PYTHON" -I - <<'PY'
+          import importlib
+          import pkgutil
+          import sys
+          from pathlib import Path
+
+          import financeiq
+
+          if not Path(financeiq.__file__).resolve().is_relative_to(Path(sys.prefix).resolve()):
+              raise SystemExit("Backend must be imported from the installed wheel.")
+          for module in pkgutil.walk_packages(financeiq.__path__, "financeiq."):
+              importlib.import_module(module.name)
+          print("Installed wheel imports passed.")
+          PY
+
+  integration:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: PostgreSQL integration
+            marker: postgres
+            timeout: 15
+          - name: Compose integration
+            marker: compose
+            timeout: 25
+    env:
+      TEST_MARKER: ${{ matrix.marker }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version-file: backend/.python-version
+          architecture: x64
+          cache: pip
+          cache-dependency-path: backend/requirements/dev-linux-py314.txt
+      - name: Check Docker Engine
+        run: docker info --format '{{.OSType}}/{{.Architecture}}'
+      - name: Check Docker Compose
+        if: matrix.marker == 'compose'
+        run: docker compose version
+      - name: Install locked dependencies and backend
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --require-hashes -r requirements/dev-linux-py314.txt
+          .venv/bin/python -m pip install --no-deps --no-build-isolation -e .
+      - name: Run integration tests
+        run: .venv/bin/python -m pytest tests/integration -m "$TEST_MARKER"
