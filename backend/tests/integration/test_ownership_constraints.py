@@ -5,7 +5,6 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from financeiq.db.models import metadata
-from tests.integration.test_imports import imports_migrator as imports_migrator
 
 pytestmark = [pytest.mark.postgres, pytest.mark.asyncio]
 
@@ -128,8 +127,8 @@ DEFERRED_KEYS: set[ForeignKey] = {
 }
 
 
-async def test_complete_foreign_key_contract(imports_migrator: AsyncEngine) -> None:
-    async with imports_migrator.connect() as connection:
+async def test_complete_foreign_key_contract(financial_migrator: AsyncEngine) -> None:
+    async with financial_migrator.connect() as connection:
         rows = (
             (
                 await connection.execute(

@@ -44,13 +44,13 @@ def migration_database(transactions_postgres: TestPostgres) -> Iterator[TestPost
         """)
 
     clear()
-    result = database.alembic("upgrade", "head")
+    result = database.alembic("upgrade", "0006")
     assert result.returncode == 0, result.stderr
     try:
         yield database
     finally:
         clear()
-        result = database.alembic("upgrade", "head")
+        result = database.alembic("upgrade", "0006")
         assert result.returncode == 0, result.stderr
 
 
@@ -136,10 +136,9 @@ def test_upgrade_and_empty_downgrade_preserve_previous_history(
     previous_tables = set(metadata.tables) - NEW_TABLES
     before = snapshot(database, previous_tables)
     for _ in range(2):
-        result = database.alembic("upgrade", "head")
+        result = database.alembic("upgrade", "0006")
         assert result.returncode == 0, result.stderr
-        assert database.alembic("upgrade", "head").returncode == 0
-        assert database.alembic("check").returncode == 0
+        assert database.alembic("upgrade", "0006").returncode == 0
         assert snapshot(database, previous_tables) == before
         assert (
             query(database, "SELECT result_transaction_id FROM import_movements")[0][0]
@@ -164,7 +163,7 @@ def test_incompatible_legacy_link_upgrade_is_atomic(
     database.psql("UPDATE import_movements SET decision='link';")
     previous_tables = set(metadata.tables) - NEW_TABLES
     before = snapshot(database, previous_tables)
-    result = database.alembic("--raiseerr", "upgrade", "head")
+    result = database.alembic("--raiseerr", "upgrade", "0006")
     assert result.returncode != 0
     assert "Migration operation failed." in result.stderr
     assert query(database, "SELECT version_num FROM alembic_version")[0][0] == "0005"
@@ -192,7 +191,6 @@ def test_downgrade_preserves_live_and_cancelled_financial_history(
     assert (
         query(database, "SELECT result_transaction_id FROM import_movements") == results
     )
-    assert database.alembic("check").returncode == 0
 
 
 @pytest.mark.parametrize(

@@ -74,7 +74,7 @@ class MigrationIntegrationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_history_roundtrip_and_domain_schema(self) -> None:
-        self.assertEqual(self.database.alembic("current").stdout.strip(), "0006 (head)")
+        self.assertEqual(self.database.alembic("current").stdout.strip(), "0007 (head)")
         self.assertEqual(self.database.alembic("upgrade", "head").returncode, 0)
         self.assertEqual(self.database.alembic("downgrade", "base").returncode, 0)
         self.assertEqual(self.query("SELECT * FROM alembic_version"), [])
@@ -137,7 +137,7 @@ class MigrationIntegrationTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("Migration operation failed.", result.stderr)
             self.assertEqual(
-                self.query("SELECT version_num FROM alembic_version")[0][0], "0006"
+                self.query("SELECT version_num FROM alembic_version")[0][0], "0007"
             )
             self.assertEqual(self.query("SELECT count(*) FROM users")[0][0], 1)
             self.assertEqual(
@@ -201,6 +201,8 @@ class MigrationIntegrationTests(unittest.TestCase):
         self.assertEqual(self.database.alembic("upgrade", "head").returncode, 0)
 
     def test_accounts_downgrade_refuses_audit_and_financial_history(self) -> None:
+        # Historical migration contract before evidence enforcement.
+        self.assertEqual(self.database.alembic("downgrade", "0006").returncode, 0)
         self.query(
             """
             INSERT INTO users(id,email,password_hash,timezone)
@@ -240,7 +242,6 @@ class MigrationIntegrationTests(unittest.TestCase):
             self.assertEqual(
                 self.query("SELECT count(*) FROM financial_actions")[0][0], 1
             )
-            self.assertEqual(self.database.alembic("check").returncode, 0)
 
         assert_rejected()
         self.query(
@@ -352,7 +353,7 @@ class MigrationIntegrationTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("Migration operation failed.", result.stderr)
             self.assertEqual(
-                self.query("SELECT version_num FROM alembic_version")[0][0], "0006"
+                self.query("SELECT version_num FROM alembic_version")[0][0], "0007"
             )
             self.assertEqual(self.query("SELECT count(*) FROM categories")[0][0], 1)
             self.assertEqual(
@@ -367,6 +368,8 @@ class MigrationIntegrationTests(unittest.TestCase):
             self.assertEqual(self.database.alembic("check").returncode, 0)
 
     def test_imports_upgrade_empty_downgrade_preserves_previous_data(self) -> None:
+        # Historical migration contract before evidence enforcement.
+        self.assertEqual(self.database.alembic("downgrade", "0006").returncode, 0)
         self.assertEqual(self.database.alembic("downgrade", "0004").returncode, 0)
         self.query(
             """
@@ -411,10 +414,9 @@ class MigrationIntegrationTests(unittest.TestCase):
         }
         snapshot = {table: self.query(sql) for table, sql in queries.items()}
         for _ in range(2):
-            result = self.database.alembic("upgrade", "head")
+            result = self.database.alembic("upgrade", "0006")
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(self.database.alembic("upgrade", "head").returncode, 0)
-            self.assertEqual(self.database.alembic("check").returncode, 0)
+            self.assertEqual(self.database.alembic("upgrade", "0006").returncode, 0)
             self.assertIsNone(
                 self.query("SELECT source_attempt_id FROM financial_actions")[0][0]
             )
@@ -425,11 +427,13 @@ class MigrationIntegrationTests(unittest.TestCase):
             )
             for table, before in snapshot.items():
                 self.assertEqual(self.query(queries[table]), before)
-        self.assertEqual(self.database.alembic("upgrade", "head").returncode, 0)
+        self.assertEqual(self.database.alembic("upgrade", "0006").returncode, 0)
 
     def test_imports_downgrade_preserves_minimal_identity_and_import_audit(
         self,
     ) -> None:
+        # Historical migration contract before evidence enforcement.
+        self.assertEqual(self.database.alembic("downgrade", "0006").returncode, 0)
         self.query(
             """
             INSERT INTO users(id,email,password_hash,timezone)
@@ -474,7 +478,6 @@ class MigrationIntegrationTests(unittest.TestCase):
                 )
                 table = "import_batches" if kind == "batch" else "financial_actions"
                 self.assertEqual(self.query(f"SELECT count(*) FROM {table}")[0][0], 1)
-                self.assertEqual(self.database.alembic("check").returncode, 0)
                 self.query(f"DELETE FROM {table}", execute=True)
 
     def test_bootstrap_rejects_incompatible_role(self) -> None:
@@ -607,5 +610,5 @@ class MigrationIntegrationTests(unittest.TestCase):
             self.assertNotIn("During handling", result.stderr)
         self.assertIsNone(self.query("SELECT to_regclass('rollback_probe')")[0][0])
         self.assertEqual(
-            self.query("SELECT version_num FROM alembic_version")[0][0], "0006"
+            self.query("SELECT version_num FROM alembic_version")[0][0], "0007"
         )

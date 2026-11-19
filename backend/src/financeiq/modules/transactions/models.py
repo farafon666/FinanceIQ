@@ -1,4 +1,4 @@
-"""Financial facts and versioned transfer links; cross-row rules arrive in 2.7."""
+"""Financial facts and transfer history, protected by migration-owned guards."""
 
 from datetime import date, datetime
 from decimal import Decimal
@@ -9,6 +9,7 @@ from sqlalchemy import (
     CheckConstraint,
     Date,
     DateTime,
+    FetchedValue,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
@@ -128,7 +129,9 @@ class Transaction(_TransactionRecord, Base):
     refund_of_transaction_id: Mapped[UUID | None] = mapped_column()
     refund_action_id: Mapped[UUID | None] = mapped_column()
     last_action_id: Mapped[UUID] = mapped_column()
-    revision: Mapped[int] = mapped_column(BigInteger, server_default=text("1"))
+    revision: Mapped[int] = mapped_column(
+        BigInteger, server_default=text("1"), server_onupdate=FetchedValue()
+    )
     cancelled_by_id: Mapped[UUID | None] = mapped_column(server_default=text("NULL"))
 
 

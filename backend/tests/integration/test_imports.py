@@ -35,11 +35,11 @@ pytestmark = [pytest.mark.postgres, pytest.mark.asyncio]
 
 @pytest_asyncio.fixture
 async def imports_migrator(
-    runtime_postgres: TestPostgres,
+    storage_postgres: TestPostgres,
 ) -> AsyncIterator[AsyncEngine]:
     engine = create_migration_engine(
         MigrationSettings(
-            migration_database_url=runtime_postgres.url(
+            migration_database_url=storage_postgres.url(
                 "financeiq_migrator", sqlalchemy=True
             )
         )
@@ -52,7 +52,7 @@ async def imports_migrator(
 
 @pytest_asyncio.fixture
 async def imports_engine(
-    runtime_postgres: TestPostgres, imports_migrator: AsyncEngine
+    storage_postgres: TestPostgres, imports_migrator: AsyncEngine
 ) -> AsyncIterator[AsyncEngine]:
     async def clear() -> None:
         # Only the disposable TestPostgres instance. Runtime cannot TRUNCATE;
@@ -63,7 +63,7 @@ async def imports_engine(
     engine = create_engine(
         Settings(
             app_env="test",
-            database_url=runtime_postgres.url("financeiq_runtime", sqlalchemy=True),
+            database_url=storage_postgres.url("financeiq_runtime", sqlalchemy=True),
         )
     )
     try:

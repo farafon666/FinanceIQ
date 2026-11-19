@@ -41,6 +41,24 @@ class FinancialAction(Base):
         CheckConstraint("schema_version > 0", name="schema_version_positive"),
         CheckConstraint("octet_length(plan_digest) = 32", name="plan_digest_length"),
         CheckConstraint("jsonb_typeof(details) = 'object'", name="details_object"),
+        CheckConstraint(
+            "schema_version = 1 "
+            "AND jsonb_typeof(details->'accepted_plan') IS NOT DISTINCT FROM 'object' "
+            "AND jsonb_typeof(details->'result') IS NOT DISTINCT FROM 'object' "
+            "AND jsonb_typeof(details->'accepted_plan'->'parameters') IS NOT DISTINCT FROM 'object' "
+            "AND jsonb_typeof(details->'accepted_plan'->'consents') IS NOT DISTINCT FROM 'array' "
+            "AND details->'accepted_plan' @> jsonb_build_object("
+            "'user_id',user_id,'action_type',action_type,"
+            "'account_id',account_id,'source_attempt_id',source_attempt_id) "
+            "AND (action_type NOT IN ('import_confirm','import_cancel') OR "
+            "(source_attempt_id IS NOT NULL AND account_id IS NULL)) "
+            "AND (action_type NOT IN ('confirm_balance','revoke_balance','confirm_history',"
+            "'revoke_history','archive_account','restore_account') OR "
+            "(account_id IS NOT NULL AND source_attempt_id IS NULL)) "
+            "AND (action_type NOT IN ('import_cancel','revoke_balance','revoke_history') OR "
+            "(reason IS NOT NULL AND btrim(reason) <> ''))",
+            name="evidence_v1",
+        ),
         ForeignKeyConstraint(
             ["user_id", "source_attempt_id"],
             ["import_attempts.user_id", "import_attempts.id"],

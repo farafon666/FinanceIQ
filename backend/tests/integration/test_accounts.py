@@ -84,11 +84,11 @@ COLUMNS: dict[Table, tuple[str, ...]] = {
 
 @pytest_asyncio.fixture
 async def accounts_migrator(
-    runtime_postgres: TestPostgres,
+    storage_postgres: TestPostgres,
 ) -> AsyncIterator[AsyncEngine]:
     engine = create_migration_engine(
         MigrationSettings(
-            migration_database_url=runtime_postgres.url(
+            migration_database_url=storage_postgres.url(
                 "financeiq_migrator", sqlalchemy=True
             )
         )
@@ -115,12 +115,12 @@ async def clear_accounts(engine: AsyncEngine) -> None:
 
 @pytest_asyncio.fixture
 async def accounts_engine(
-    runtime_postgres: TestPostgres, accounts_migrator: AsyncEngine
+    storage_postgres: TestPostgres, accounts_migrator: AsyncEngine
 ) -> AsyncIterator[AsyncEngine]:
     runtime = create_engine(
         Settings(
             app_env="test",
-            database_url=runtime_postgres.url("financeiq_runtime", sqlalchemy=True),
+            database_url=storage_postgres.url("financeiq_runtime", sqlalchemy=True),
         )
     )
     try:
