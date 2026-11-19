@@ -8,11 +8,14 @@ from financeiq.modules.accounts.models import (
     HistoryConfirmation,
 )
 from financeiq.modules.auth.models import AuthSession, User
+from financeiq.modules.categories.models import CategorizationRule, Category
 
 __all__ = [
     "Account",
     "AuthSession",
     "BalanceConfirmation",
+    "CategorizationRule",
+    "Category",
     "FinancialAction",
     "HistoryConfirmation",
     "User",

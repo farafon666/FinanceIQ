@@ -74,7 +74,7 @@ class MigrationIntegrationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_history_roundtrip_and_domain_schema(self) -> None:
-        self.assertEqual(self.database.alembic("current").stdout.strip(), "0003 (head)")
+        self.assertEqual(self.database.alembic("current").stdout.strip(), "0004 (head)")
         self.assertEqual(self.database.alembic("upgrade", "head").returncode, 0)
         self.assertEqual(self.database.alembic("downgrade", "base").returncode, 0)
         self.assertEqual(self.query("SELECT * FROM alembic_version"), [])
@@ -92,6 +92,8 @@ class MigrationIntegrationTests(unittest.TestCase):
                 "alembic_version",
                 "auth_sessions",
                 "balance_confirmations",
+                "categories",
+                "categorization_rules",
                 "financial_actions",
                 "history_confirmations",
                 "users",
@@ -126,7 +128,7 @@ class MigrationIntegrationTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("Migration operation failed.", result.stderr)
             self.assertEqual(
-                self.query("SELECT version_num FROM alembic_version")[0][0], "0003"
+                self.query("SELECT version_num FROM alembic_version")[0][0], "0004"
             )
             self.assertEqual(self.query("SELECT count(*) FROM users")[0][0], 1)
             self.assertEqual(
@@ -224,7 +226,7 @@ class MigrationIntegrationTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("Migration operation failed.", result.stderr)
             self.assertEqual(
-                self.query("SELECT version_num FROM alembic_version")[0][0], "0003"
+                self.query("SELECT version_num FROM alembic_version")[0][0], "0004"
             )
             self.assertEqual(
                 self.query("SELECT count(*) FROM financial_actions")[0][0], 1
@@ -256,6 +258,104 @@ class MigrationIntegrationTests(unittest.TestCase):
         assert_rejected()
         for table in ("accounts", "balance_confirmations", "history_confirmations"):
             self.assertEqual(self.query(f"SELECT count(*) FROM {table}")[0][0], 1)
+
+    def test_categories_upgrade_and_empty_downgrade_preserve_previous_data(
+        self,
+    ) -> None:
+        self.assertEqual(self.database.alembic("downgrade", "0003").returncode, 0)
+        self.query(
+            """
+            INSERT INTO users(id,email,password_hash,timezone)
+            VALUES ('00000000-0000-0000-0000-000000000001',
+                    'categories-upgrade@example.test','synthetic','UTC');
+            INSERT INTO auth_sessions(id,user_id,token_hash,csrf_token_hash,expires_at)
+            VALUES ('00000000-0000-0000-0000-000000000002',
+                    '00000000-0000-0000-0000-000000000001',
+                    decode(repeat('ab',32),'hex'),decode(repeat('cd',32),'hex'),
+                    now() + interval '1 day');
+            INSERT INTO accounts(id,user_id,name,currency_code)
+            VALUES ('00000000-0000-0000-0000-000000000003',
+                    '00000000-0000-0000-0000-000000000001','Synthetic','RUB');
+        """,
+            execute=True,
+        )
+        self.addCleanup(
+            self.query,
+            "DELETE FROM accounts; DELETE FROM auth_sessions; DELETE FROM users",
+            execute=True,
+        )
+        snapshot = {
+            table: self.query(f"SELECT * FROM {table}")
+            for table in ("users", "auth_sessions", "accounts")
+        }
+        for _ in range(2):
+            self.assertEqual(self.database.alembic("upgrade", "head").returncode, 0)
+            self.assertEqual(self.database.alembic("upgrade", "head").returncode, 0)
+            self.assertEqual(self.database.alembic("check").returncode, 0)
+            for table in ("categories", "categorization_rules"):
+                self.assertEqual(self.query(f"SELECT count(*) FROM {table}")[0][0], 0)
+            self.assertEqual(self.database.alembic("downgrade", "0003").returncode, 0)
+            self.assertIsNone(self.query("SELECT to_regclass('categories')")[0][0])
+            self.assertIsNone(
+                self.query("SELECT to_regclass('categorization_rules')")[0][0]
+            )
+            self.assertIsNone(
+                self.query("SELECT to_regprocedure('guard_category_kind_update()')")[0][
+                    0
+                ]
+            )
+            for table, before in snapshot.items():
+                self.assertEqual(self.query(f"SELECT * FROM {table}"), before)
+        self.assertEqual(self.database.alembic("upgrade", "head").returncode, 0)
+
+    def test_categories_downgrade_preserves_archived_categories_and_inactive_rules(
+        self,
+    ) -> None:
+        self.query(
+            """
+            INSERT INTO users(id,email,password_hash,timezone)
+            VALUES ('00000000-0000-0000-0000-000000000001',
+                    'categories-downgrade@example.test','synthetic','UTC');
+            INSERT INTO categories(id,user_id,name,name_key,kind,archived_at)
+            VALUES ('00000000-0000-0000-0000-000000000002',
+                    '00000000-0000-0000-0000-000000000001',
+                    'Synthetic','synthetic','expense',now());
+        """,
+            execute=True,
+        )
+        self.addCleanup(
+            self.query,
+            "DELETE FROM categorization_rules; DELETE FROM categories; DELETE FROM users",
+            execute=True,
+        )
+        for with_rule in (False, True):
+            if with_rule:
+                self.query(
+                    """
+                    INSERT INTO categorization_rules(id,user_id,category_id,pattern,priority,is_active)
+                    VALUES ('00000000-0000-0000-0000-000000000003',
+                            '00000000-0000-0000-0000-000000000001',
+                            '00000000-0000-0000-0000-000000000002','Synthetic',10,false);
+                """,
+                    execute=True,
+                )
+            result = self.database.alembic("--raiseerr", "downgrade", "0003")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Migration operation failed.", result.stderr)
+            self.assertEqual(
+                self.query("SELECT version_num FROM alembic_version")[0][0], "0004"
+            )
+            self.assertEqual(self.query("SELECT count(*) FROM categories")[0][0], 1)
+            self.assertEqual(
+                self.query("SELECT count(*) FROM categorization_rules")[0][0],
+                int(with_rule),
+            )
+            self.assertIsNotNone(
+                self.query("SELECT to_regprocedure('guard_category_kind_update()')")[0][
+                    0
+                ]
+            )
+            self.assertEqual(self.database.alembic("check").returncode, 0)
 
     def test_bootstrap_rejects_incompatible_role(self) -> None:
         self.database.psql("ALTER ROLE financeiq_runtime CREATEDB;")
@@ -387,5 +487,5 @@ class MigrationIntegrationTests(unittest.TestCase):
             self.assertNotIn("During handling", result.stderr)
         self.assertIsNone(self.query("SELECT to_regclass('rollback_probe')")[0][0])
         self.assertEqual(
-            self.query("SELECT version_num FROM alembic_version")[0][0], "0003"
+            self.query("SELECT version_num FROM alembic_version")[0][0], "0004"
         )

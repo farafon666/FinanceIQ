@@ -50,6 +50,8 @@ class MigrationCommandTests(unittest.TestCase):
             "financial_actions",
             "balance_confirmations",
             "history_confirmations",
+            "categories",
+            "categorization_rules",
         ):
             self.assertIn(f"CREATE TABLE {table}", result.stdout)
         self.assertNotIn("secret-sentinel", result.stdout + result.stderr)
@@ -64,7 +66,23 @@ class MigrationCommandTests(unittest.TestCase):
     def test_history_has_one_head_without_loading_credentials(self) -> None:
         result = self.run_alembic("heads")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "0003 (head)")
+        self.assertEqual(result.stdout.strip(), "0004 (head)")
+
+    def test_categories_offline_downgrade_checks_data_before_drop(self) -> None:
+        result = self.run_alembic("downgrade", "0004:0003", "--sql")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "LOCK TABLE categories, categorization_rules IN ACCESS EXCLUSIVE MODE",
+            result.stdout,
+        )
+        self.assertIn("Cannot downgrade nonempty Categories tables", result.stdout)
+        self.assertLess(
+            result.stdout.index("IF EXISTS"), result.stdout.index("DROP TABLE")
+        )
+        self.assertIn("DROP FUNCTION guard_category_kind_update()", result.stdout)
+        self.assertNotIn("DROP TABLE users", result.stdout)
+        self.assertNotIn("DROP TABLE accounts", result.stdout)
+        self.assertNotIn("secret-sentinel", result.stdout + result.stderr)
 
     def test_accounts_offline_downgrade_checks_data_before_drop(self) -> None:
         result = self.run_alembic("downgrade", "0003:0002", "--sql")
