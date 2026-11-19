@@ -400,6 +400,103 @@ async def test_cross_owner_links_rejected(
     assert getattr(failure.value.orig, "sqlstate", None) == "23503"
 
 
+@pytest.mark.parametrize("reference", ["account_id", "source_attempt_id"])
+async def test_runtime_action_rejects_foreign_reference(
+    imports_engine: AsyncEngine, seeded: Graph, reference: str
+) -> None:
+    async with imports_engine.begin() as connection:
+        other = await seed(connection)
+    own_target = seeded.account if reference == "account_id" else seeded.attempt
+    other_target = other.account if reference == "account_id" else other.attempt
+    statement = (
+        "INSERT INTO financial_actions(id,user_id,request_id,action_type,"
+        f"plan_version,plan_digest,details,{reference}) "
+        "VALUES (:id,:owner,:id,'import_confirm',1,decode(repeat('ab',32),'hex'),"
+        "'{}',:target)"
+    )
+    parameters = {"id": uuid4(), "owner": seeded.owner, "target": other_target}
+    with pytest.raises(DBAPIError) as failure:
+        async with imports_engine.begin() as connection:
+            await connection.execute(text(statement), parameters)
+    assert getattr(failure.value.orig, "sqlstate", None) == "23503"
+    async with imports_engine.begin() as connection:
+        assert (
+            await connection.scalar(
+                text("SELECT count(*) FROM financial_actions WHERE id=:id"), parameters
+            )
+            == 0
+        )
+        await connection.execute(text(statement), parameters | {"target": own_target})
+
+
+async def test_accept_rejects_foreign_action(imports_engine: AsyncEngine) -> None:
+    async with imports_engine.begin() as connection:
+        own = await seed(connection)
+        other = await seed(connection)
+        await prepare_accept(connection, own)
+        await prepare_accept(connection, other)
+    statement = (
+        "UPDATE import_attempts SET status='accepted',accepted_action_id=:action,"
+        "preview_plan=NULL WHERE id=:attempt"
+    )
+    with pytest.raises(DBAPIError) as failure:
+        async with imports_engine.begin() as connection:
+            await connection.execute(
+                text(statement), own.parameters() | {"action": other.action}
+            )
+    assert getattr(failure.value.orig, "sqlstate", None) == "23503"
+    async with imports_engine.begin() as connection:
+        for graph in (own, other):
+            row = (
+                await connection.execute(
+                    text(
+                        "SELECT status,accepted_action_id,preview_plan,preview_digest "
+                        "FROM import_attempts WHERE id=:attempt"
+                    ),
+                    graph.parameters(),
+                )
+            ).one()
+            assert tuple(row) == ("preview", None, {}, bytes.fromhex("ef" * 32))
+        await connection.execute(text(statement), own.parameters())
+
+
+@pytest.mark.parametrize("operation", ["insert", "update"])
+async def test_movement_rejects_different_own_mapping_account(
+    imports_engine: AsyncEngine, seeded: Graph, operation: str
+) -> None:
+    async with imports_engine.begin() as connection:
+        account = uuid4()
+        await connection.execute(
+            text(
+                "INSERT INTO accounts(id,user_id,name,currency_code) "
+                "VALUES (:id,:owner,'Other own account','RUB')"
+            ),
+            seeded.parameters() | {"id": account},
+        )
+    statement = (
+        "INSERT INTO import_movements(id,user_id,attempt_id,row_id,mapping_id,"
+        "side,account_id) VALUES (:id,:owner,:attempt,:row,:mapping,'incoming',:account)"
+        if operation == "insert"
+        else "UPDATE import_movements SET account_id=:account WHERE id=:movement"
+    )
+    parameters = seeded.parameters() | {"id": uuid4(), "account": account}
+    with pytest.raises(DBAPIError) as failure:
+        async with imports_engine.begin() as connection:
+            await connection.execute(text(statement), parameters)
+    assert getattr(failure.value.orig, "sqlstate", None) == "23503"
+    async with imports_engine.begin() as connection:
+        assert (
+            await connection.scalar(
+                text("SELECT account_id FROM import_movements WHERE id=:movement"),
+                parameters,
+            )
+            == seeded.account
+        )
+        await connection.execute(
+            text(statement), parameters | {"account": seeded.account}
+        )
+
+
 @pytest.mark.parametrize(
     "statement",
     [

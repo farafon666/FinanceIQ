@@ -465,6 +465,74 @@ async def test_action_owner_and_request_identity(
 
 
 @pytest.mark.parametrize("table", ["balance_confirmations", "history_confirmations"])
+@pytest.mark.parametrize(
+    "column", ["account_id", "confirmation_action_id", "revocation_action_id"]
+)
+async def test_runtime_confirmation_rejects_foreign_reference(
+    accounts_engine: AsyncEngine, table: ConfirmationTable, column: str
+) -> None:
+    async with accounts_engine.begin() as connection:
+        owner = await add_owner(connection)
+        account = await add_account(connection, owner)
+        confirmation = await add_confirmation(connection, table, owner, account)
+        action_type = (
+            "confirm_balance" if table == "balance_confirmations" else "confirm_history"
+        )
+        action = await add_action(connection, owner, account, action_type)
+        other = await add_owner(connection)
+        other_account = await add_account(connection, other)
+        other_action = await add_action(connection, other, other_account, action_type)
+    fields, values = (
+        ("balance_date,balance", "'2026-09-30',0.00")
+        if table == "balance_confirmations"
+        else (
+            "start_date,end_date,observed_facts_version,observed_facts_digest",
+            "'2026-09-30','2026-10-03',0,decode(repeat('ab',32),'hex')",
+        )
+    )
+    parameters = {
+        "id": uuid4(),
+        "owner": owner,
+        "account": other_account if column == "account_id" else account,
+        "action": other_action if column != "account_id" else action,
+        "confirmation": confirmation,
+    }
+    statement = (
+        f"UPDATE {table} SET revocation_action_id=:action WHERE id=:confirmation"
+        if column == "revocation_action_id"
+        else f"INSERT INTO {table}(id,user_id,account_id,confirmation_action_id,{fields}) "
+        f"VALUES (:id,:owner,:account,:action,{values})"
+    )
+    with pytest.raises(DBAPIError) as failure:
+        async with accounts_engine.begin() as connection:
+            assert await connection.scalar(text("SELECT current_user")) == (
+                "financeiq_runtime"
+            )
+            await connection.execute(text(statement), parameters)
+    assert getattr(failure.value.orig, "sqlstate", None) == "23503"
+
+    async with accounts_engine.begin() as connection:
+        assert (
+            await connection.scalar(
+                text(
+                    f"SELECT revocation_action_id FROM {table} WHERE id=:confirmation"
+                ),
+                parameters,
+            )
+            is None
+        )
+        # The same SQL succeeds for the owner: ACL/CHECK/guards did not cause
+        # the negative result, and a fresh transaction works after rollback.
+        if column == "revocation_action_id":
+            action = await add_action(
+                connection, owner, account, action_type.replace("confirm", "revoke")
+            )
+        await connection.execute(
+            text(statement), parameters | {"account": account, "action": action}
+        )
+
+
+@pytest.mark.parametrize("table", ["balance_confirmations", "history_confirmations"])
 async def test_unique_active_confirmation_and_preserved_revocation(
     accounts_engine: AsyncEngine,
     accounts_migrator: AsyncEngine,

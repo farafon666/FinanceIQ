@@ -760,6 +760,258 @@ async def test_source_and_result_account_scope(imports_engine: AsyncEngine) -> N
     assert getattr(failure.value.orig, "sqlstate", None) == "23503"
 
 
+async def with_other_account(connection: AsyncConnection, graph: Graph) -> Graph:
+    account, mapping = uuid4(), uuid4()
+    await connection.execute(
+        text(
+            "INSERT INTO accounts(id,user_id,name,currency_code) "
+            "VALUES (:id,:owner,'Other own account','RUB')"
+        ),
+        graph.parameters() | {"id": account},
+    )
+    await connection.execute(
+        text(
+            "INSERT INTO import_account_mappings(id,user_id,attempt_id,"
+            "source_account_name,account_id) VALUES "
+            "(:id,:owner,:attempt,'Other own account',:account)"
+        ),
+        graph.parameters() | {"id": mapping, "account": account},
+    )
+    return replace(graph, account=account, mapping=mapping)
+
+
+async def add_observation(connection: AsyncConnection, graph: Graph) -> Graph:
+    """A different book can link an existing fact without replacing its source."""
+    observation = replace(
+        graph,
+        batch=uuid4(),
+        attempt=uuid4(),
+        mapping=uuid4(),
+        row=uuid4(),
+        movement=uuid4(),
+        action=uuid4(),
+    )
+    for statement in (
+        "INSERT INTO import_batches(id,user_id,source_code,format_code,file_sha256,byte_size) "
+        "VALUES (:batch,:owner,'money_manager','money_manager_xlsx_v1',"
+        "decode(repeat('de',32),'hex'),1024)",
+        "INSERT INTO import_attempts(id,user_id,batch_id,attempt_number,"
+        "received_at,expires_at,parser_version) VALUES "
+        "(:attempt,:owner,:batch,1,'2026-11-03+00','2026-11-04+00','synthetic_v1')",
+        "INSERT INTO import_account_mappings(id,user_id,attempt_id,"
+        "source_account_name,account_id) VALUES "
+        "(:mapping,:owner,:attempt,'Observation',:account)",
+        "INSERT INTO import_rows(id,user_id,attempt_id,sheet_name,row_number) "
+        "VALUES (:row,:owner,:attempt,'Расходы',3)",
+        "INSERT INTO import_movements(id,user_id,attempt_id,row_id,mapping_id,side,account_id) "
+        "VALUES (:movement,:owner,:attempt,:row,:mapping,'single',:account)",
+    ):
+        await connection.execute(text(statement), observation.parameters())
+    return observation
+
+
+@pytest.mark.parametrize(
+    "target", ["foreign", "foreign_null_account", "other_own_account"]
+)
+async def test_invalid_result_fails_only_on_commit_and_rolls_back(
+    imports_engine: AsyncEngine, target: str
+) -> None:
+    async with imports_engine.begin() as connection:
+        own, own_fact = await create_fact(connection)
+        other, other_fact = await create_fact(connection)
+        result = other_fact
+        if target == "other_own_account":
+            _, result = await create_fact(
+                connection, await with_other_account(connection, own)
+            )
+        observation = await add_observation(connection, own)
+    audit = uuid4()
+    parameters = observation.parameters() | {
+        "action": own.action,
+        "result": result,
+        "audit": audit,
+        "fact": own_fact,
+    }
+    executed = False
+    with pytest.raises(DBAPIError) as failure:
+        async with imports_engine.begin() as connection:
+            await connection.execute(
+                text("UPDATE accounts SET name='Uncommitted change' WHERE id=:account"),
+                parameters,
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO financial_action_transactions(id,user_id,action_id,"
+                    "transaction_id,before_state,after_state) "
+                    "VALUES (:audit,:owner,:action,:fact,'{}','{}')"
+                ),
+                parameters,
+            )
+            nullable = ",account_id=NULL" if target == "foreign_null_account" else ""
+            await connection.execute(
+                text(
+                    "UPDATE import_movements SET decision='link',"
+                    f"result_transaction_id=:result{nullable} WHERE id=:movement"
+                ),
+                parameters,
+            )
+            assert (
+                await connection.scalar(
+                    text(
+                        "SELECT result_transaction_id FROM import_movements WHERE id=:movement"
+                    ),
+                    parameters,
+                )
+                == result
+            )
+            executed = True
+    assert executed, "The invalid reference must reach commit before failing"
+    assert getattr(failure.value.orig, "sqlstate", None) == "23503"
+
+    # A separate checkout observes durable state, not the failed transaction's
+    # snapshot. Both owners' facts and the second owner's graph remain intact.
+    async with imports_engine.connect() as connection:
+        for graph, fact in ((own, own_fact), (other, other_fact)):
+            row = (
+                await connection.execute(
+                    text(
+                        "SELECT account_id,decision,result_transaction_id "
+                        "FROM import_movements WHERE id=:movement"
+                    ),
+                    graph.parameters(),
+                )
+            ).one()
+            assert tuple(row) == (graph.account, "insert", fact)
+            assert (
+                await connection.scalar(
+                    text("SELECT name FROM accounts WHERE id=:account"),
+                    graph.parameters(),
+                )
+                == "Synthetic"
+            )
+            assert (
+                await connection.scalar(
+                    text("SELECT source_movement_id FROM transactions WHERE id=:fact"),
+                    {"fact": fact},
+                )
+                == graph.movement
+            )
+        assert (
+            await connection.scalar(
+                text(
+                    "SELECT count(*) FROM financial_action_transactions WHERE id=:audit"
+                ),
+                parameters,
+            )
+            == 0
+        )
+        row = (
+            await connection.execute(
+                text(
+                    "SELECT account_id,decision,result_transaction_id "
+                    "FROM import_movements WHERE id=:movement"
+                ),
+                parameters,
+            )
+        ).one()
+        assert tuple(row) == (own.account, "pending", None)
+    async with imports_engine.begin() as connection:
+        await connection.execute(
+            text(
+                "UPDATE import_movements SET decision='link',result_transaction_id=:fact "
+                "WHERE id=:movement"
+            ),
+            parameters,
+        )
+    async with imports_engine.connect() as connection:
+        assert (
+            await connection.scalar(
+                text("SELECT decision FROM import_movements WHERE id=:movement"),
+                parameters,
+            )
+            == "link"
+        )
+
+
+async def test_nullable_account_keeps_valid_own_result(
+    imports_engine: AsyncEngine,
+) -> None:
+    async with imports_engine.begin() as connection:
+        graph, fact = await create_fact(connection)
+        observation = await add_observation(connection, graph)
+        await connection.execute(
+            text(
+                "UPDATE import_movements SET account_id=NULL,decision='link',"
+                "result_transaction_id=:fact WHERE id=:movement"
+            ),
+            observation.parameters() | {"fact": fact},
+        )
+    async with imports_engine.connect() as connection:
+        row = (
+            await connection.execute(
+                text(
+                    "SELECT m.account_id,m.result_transaction_id,a.account_id "
+                    "FROM import_movements m JOIN import_account_mappings a "
+                    "ON a.user_id=m.user_id AND a.attempt_id=m.attempt_id "
+                    "AND a.id=m.mapping_id WHERE m.id=:movement"
+                ),
+                observation.parameters(),
+            )
+        ).one()
+        assert tuple(row) == (None, fact, graph.account)
+
+
+@pytest.mark.parametrize("sides", ["both", "outgoing", "incoming"])
+async def test_transfer_can_reference_different_own_accounts(
+    imports_engine: AsyncEngine, sides: str
+) -> None:
+    async with imports_engine.begin() as connection:
+        graph, first = await create_fact(
+            connection,
+            overrides={
+                "kind": "'transfer'",
+                "amount": "12.30" if sides == "incoming" else "-12.30",
+            },
+        )
+        outgoing = first if sides != "incoming" else None
+        incoming = first if sides == "incoming" else None
+        if sides == "both":
+            incoming_graph, incoming = await create_fact(
+                connection,
+                await with_other_account(connection, graph),
+                overrides={"kind": "'transfer'", "amount": "12.30"},
+            )
+            assert graph.account != incoming_graph.account
+        link = uuid4()
+        await connection.execute(
+            text(
+                "INSERT INTO transfer_links(id,user_id,outgoing_transaction_id,"
+                "incoming_transaction_id,confirmation_action_id) "
+                "VALUES (:id,:owner,:outgoing,:incoming,:action)"
+            ),
+            graph.parameters()
+            | {
+                "id": link,
+                "outgoing": outgoing,
+                "incoming": incoming,
+            },
+        )
+    async with imports_engine.connect() as connection:
+        row = (
+            await connection.execute(
+                text(
+                    "SELECT user_id,outgoing_transaction_id,incoming_transaction_id "
+                    "FROM transfer_links WHERE id=:id"
+                ),
+                {"id": link},
+            )
+        ).one()
+        assert tuple(row) == (graph.owner, outgoing, incoming)
+        assert await connection.scalar(text("SELECT count(*) FROM transactions")) == (
+            2 if sides == "both" else 1
+        )
+
+
 @pytest.mark.parametrize("role", ["outgoing", "incoming"])
 @pytest.mark.parametrize("ending", ["ended_by_action_id", "cancelled_by_id"])
 async def test_transfer_history_releases_active_role(
