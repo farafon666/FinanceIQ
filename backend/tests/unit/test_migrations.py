@@ -45,6 +45,13 @@ class MigrationCommandTests(unittest.TestCase):
         self.assertIn("0001", result.stdout)
         self.assertIn("CREATE TABLE users", result.stdout)
         self.assertIn("CREATE TABLE auth_sessions", result.stdout)
+        for table in (
+            "accounts",
+            "financial_actions",
+            "balance_confirmations",
+            "history_confirmations",
+        ):
+            self.assertIn(f"CREATE TABLE {table}", result.stdout)
         self.assertNotIn("secret-sentinel", result.stdout + result.stderr)
 
     def test_online_does_not_fall_back_to_runtime_credentials(self) -> None:
@@ -57,7 +64,22 @@ class MigrationCommandTests(unittest.TestCase):
     def test_history_has_one_head_without_loading_credentials(self) -> None:
         result = self.run_alembic("heads")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "0002 (head)")
+        self.assertEqual(result.stdout.strip(), "0003 (head)")
+
+    def test_accounts_offline_downgrade_checks_data_before_drop(self) -> None:
+        result = self.run_alembic("downgrade", "0003:0002", "--sql")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("IN ACCESS EXCLUSIVE MODE", result.stdout)
+        self.assertIn(
+            "Cannot downgrade nonempty Accounts or financial audit tables",
+            result.stdout,
+        )
+        self.assertLess(
+            result.stdout.index("IF EXISTS"), result.stdout.index("DROP TABLE")
+        )
+        self.assertIn("DROP FUNCTION guard_confirmation_update()", result.stdout)
+        self.assertNotIn("DROP TABLE users", result.stdout)
+        self.assertNotIn("secret-sentinel", result.stdout + result.stderr)
 
     def test_offline_downgrade_includes_guard_without_credentials(self) -> None:
         result = self.run_alembic("downgrade", "0002:0001", "--sql")

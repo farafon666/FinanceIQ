@@ -73,8 +73,8 @@ class MigrationIntegrationTests(unittest.TestCase):
         result = self.database.alembic("upgrade", "head")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_history_roundtrip_and_auth_schema(self) -> None:
-        self.assertEqual(self.database.alembic("current").stdout.strip(), "0002 (head)")
+    def test_history_roundtrip_and_domain_schema(self) -> None:
+        self.assertEqual(self.database.alembic("current").stdout.strip(), "0003 (head)")
         self.assertEqual(self.database.alembic("upgrade", "head").returncode, 0)
         self.assertEqual(self.database.alembic("downgrade", "base").returncode, 0)
         self.assertEqual(self.query("SELECT * FROM alembic_version"), [])
@@ -86,7 +86,16 @@ class MigrationIntegrationTests(unittest.TestCase):
             "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename"
         )
         self.assertEqual(
-            [row[0] for row in tables], ["alembic_version", "auth_sessions", "users"]
+            [row[0] for row in tables],
+            [
+                "accounts",
+                "alembic_version",
+                "auth_sessions",
+                "balance_confirmations",
+                "financial_actions",
+                "history_confirmations",
+                "users",
+            ],
         )
         self.assertEqual(self.database.alembic("check").returncode, 0)
 
@@ -117,7 +126,7 @@ class MigrationIntegrationTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("Migration operation failed.", result.stderr)
             self.assertEqual(
-                self.query("SELECT version_num FROM alembic_version")[0][0], "0002"
+                self.query("SELECT version_num FROM alembic_version")[0][0], "0003"
             )
             self.assertEqual(self.query("SELECT count(*) FROM users")[0][0], 1)
             self.assertEqual(
@@ -147,6 +156,106 @@ class MigrationIntegrationTests(unittest.TestCase):
         self.assertEqual(
             tuple(owners[0]), ("postgres", "financeiq_migrator", "financeiq_migrator")
         )
+
+    def test_accounts_upgrade_and_empty_downgrade_preserve_auth(self) -> None:
+        self.assertEqual(self.database.alembic("downgrade", "0002").returncode, 0)
+        self.query(
+            """
+            INSERT INTO users(id,email,password_hash,timezone)
+            VALUES ('00000000-0000-0000-0000-000000000001',
+                    'upgrade@example.test','synthetic','UTC');
+            INSERT INTO auth_sessions(id,user_id,token_hash,csrf_token_hash,expires_at)
+            VALUES ('00000000-0000-0000-0000-000000000002',
+                    '00000000-0000-0000-0000-000000000001',
+                    decode(repeat('ab',32),'hex'),decode(repeat('cd',32),'hex'),
+                    now() + interval '1 day');
+        """,
+            execute=True,
+        )
+        self.addCleanup(
+            self.query, "DELETE FROM auth_sessions; DELETE FROM users", execute=True
+        )
+        for _ in range(2):
+            self.assertEqual(self.database.alembic("upgrade", "head").returncode, 0)
+            self.assertEqual(self.database.alembic("check").returncode, 0)
+            self.assertEqual(self.database.alembic("downgrade", "0002").returncode, 0)
+            self.assertEqual(self.query("SELECT count(*) FROM users")[0][0], 1)
+            self.assertEqual(self.query("SELECT count(*) FROM auth_sessions")[0][0], 1)
+            self.assertIsNone(self.query("SELECT to_regclass('accounts')")[0][0])
+            self.assertIsNone(
+                self.query("SELECT to_regprocedure('guard_confirmation_update()')")[0][
+                    0
+                ]
+            )
+        self.assertEqual(self.database.alembic("upgrade", "head").returncode, 0)
+
+    def test_accounts_downgrade_refuses_audit_and_financial_history(self) -> None:
+        self.query(
+            """
+            INSERT INTO users(id,email,password_hash,timezone)
+            VALUES ('00000000-0000-0000-0000-000000000001',
+                    'downgrade@example.test','synthetic','UTC');
+        """,
+            execute=True,
+        )
+        self.addCleanup(
+            self.query,
+            """
+            DELETE FROM history_confirmations; DELETE FROM balance_confirmations;
+            DELETE FROM financial_actions; DELETE FROM accounts; DELETE FROM users;
+        """,
+            execute=True,
+        )
+        # An action can exist without an account; check it independently first.
+        self.query(
+            """
+            INSERT INTO financial_actions(id,user_id,request_id,action_type,
+                plan_version,plan_digest,details)
+            VALUES ('00000000-0000-0000-0000-000000000003',
+                    '00000000-0000-0000-0000-000000000001',
+                    '00000000-0000-0000-0000-000000000004',
+                    'confirm_balance',1,decode(repeat('ab',32),'hex'),'{}');
+        """,
+            execute=True,
+        )
+
+        def assert_rejected() -> None:
+            result = self.database.alembic("--raiseerr", "downgrade", "0002")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Migration operation failed.", result.stderr)
+            self.assertEqual(
+                self.query("SELECT version_num FROM alembic_version")[0][0], "0003"
+            )
+            self.assertEqual(
+                self.query("SELECT count(*) FROM financial_actions")[0][0], 1
+            )
+            self.assertEqual(self.database.alembic("check").returncode, 0)
+
+        assert_rejected()
+        self.query(
+            """
+            INSERT INTO accounts(id,user_id,name,currency_code)
+            VALUES ('00000000-0000-0000-0000-000000000005',
+                    '00000000-0000-0000-0000-000000000001','Synthetic','RUB');
+            INSERT INTO balance_confirmations(id,user_id,account_id,balance_date,
+                balance,confirmation_action_id)
+            VALUES ('00000000-0000-0000-0000-000000000006',
+                    '00000000-0000-0000-0000-000000000001',
+                    '00000000-0000-0000-0000-000000000005','2026-10-01',0,
+                    '00000000-0000-0000-0000-000000000003');
+            INSERT INTO history_confirmations(id,user_id,account_id,start_date,end_date,
+                observed_facts_version,observed_facts_digest,confirmation_action_id)
+            VALUES ('00000000-0000-0000-0000-000000000007',
+                    '00000000-0000-0000-0000-000000000001',
+                    '00000000-0000-0000-0000-000000000005','2026-10-01','2026-10-01',
+                    0,decode(repeat('cd',32),'hex'),
+                    '00000000-0000-0000-0000-000000000003');
+        """,
+            execute=True,
+        )
+        assert_rejected()
+        for table in ("accounts", "balance_confirmations", "history_confirmations"):
+            self.assertEqual(self.query(f"SELECT count(*) FROM {table}")[0][0], 1)
 
     def test_bootstrap_rejects_incompatible_role(self) -> None:
         self.database.psql("ALTER ROLE financeiq_runtime CREATEDB;")
@@ -278,5 +387,5 @@ class MigrationIntegrationTests(unittest.TestCase):
             self.assertNotIn("During handling", result.stderr)
         self.assertIsNone(self.query("SELECT to_regclass('rollback_probe')")[0][0])
         self.assertEqual(
-            self.query("SELECT version_num FROM alembic_version")[0][0], "0002"
+            self.query("SELECT version_num FROM alembic_version")[0][0], "0003"
         )
