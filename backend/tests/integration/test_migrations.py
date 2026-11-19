@@ -13,6 +13,8 @@ from typing import ClassVar, Literal, overload
 
 import asyncpg
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 
 from tests.support.postgres import Role, TestPostgres
 
@@ -71,15 +73,57 @@ class MigrationIntegrationTests(unittest.TestCase):
         result = self.database.alembic("upgrade", "head")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_history_roundtrip_and_only_version_table(self) -> None:
-        self.assertEqual(self.database.alembic("current").stdout.strip(), "0001 (head)")
+    def test_history_roundtrip_and_auth_schema(self) -> None:
+        self.assertEqual(self.database.alembic("current").stdout.strip(), "0002 (head)")
         self.assertEqual(self.database.alembic("upgrade", "head").returncode, 0)
         self.assertEqual(self.database.alembic("downgrade", "base").returncode, 0)
         self.assertEqual(self.query("SELECT * FROM alembic_version"), [])
+        self.assertEqual(self.database.alembic("upgrade", "0001").returncode, 0)
+        self.assertIsNone(self.query("SELECT to_regclass('users')")[0][0])
+        self.assertIsNone(self.query("SELECT to_regclass('auth_sessions')")[0][0])
         self.assertEqual(self.database.alembic("upgrade", "head").returncode, 0)
-        tables = self.query("SELECT tablename FROM pg_tables WHERE schemaname='public'")
-        self.assertEqual([row[0] for row in tables], ["alembic_version"])
+        tables = self.query(
+            "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename"
+        )
+        self.assertEqual(
+            [row[0] for row in tables], ["alembic_version", "auth_sessions", "users"]
+        )
         self.assertEqual(self.database.alembic("check").returncode, 0)
+
+    def test_auth_downgrade_preserves_nonempty_tables(self) -> None:
+        self.query(
+            """
+            INSERT INTO users(id, email, password_hash, timezone)
+            VALUES ('00000000-0000-0000-0000-000000000001',
+                    'synthetic@example.com', 'synthetic-hash', 'UTC')
+        """,
+            execute=True,
+        )
+        self.addCleanup(self.query, "DELETE FROM users", execute=True)
+        self.addCleanup(self.query, "DELETE FROM auth_sessions", execute=True)
+        for with_session in (False, True):
+            if with_session:
+                self.query(
+                    """
+                    INSERT INTO auth_sessions(id, user_id, token_hash, csrf_token_hash, expires_at)
+                    VALUES ('00000000-0000-0000-0000-000000000002',
+                            '00000000-0000-0000-0000-000000000001',
+                            decode(repeat('ab', 32), 'hex'),
+                            decode(repeat('cd', 32), 'hex'), now() + interval '1 day')
+                """,
+                    execute=True,
+                )
+            result = self.database.alembic("--raiseerr", "downgrade", "0001")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Migration operation failed.", result.stderr)
+            self.assertEqual(
+                self.query("SELECT version_num FROM alembic_version")[0][0], "0002"
+            )
+            self.assertEqual(self.query("SELECT count(*) FROM users")[0][0], 1)
+            self.assertEqual(
+                self.query("SELECT count(*) FROM auth_sessions")[0][0],
+                int(with_session),
+            )
 
     def test_bootstrap_is_repeatable_without_resetting_passwords(self) -> None:
         self.assertEqual(self.database.bootstrap().returncode, 0)
@@ -210,8 +254,11 @@ class MigrationIntegrationTests(unittest.TestCase):
             (root / "alembic.ini").write_text(
                 "[alembic]\nscript_location = %(here)s/migrations\n", encoding="utf-8"
             )
-            (root / "migrations" / "versions" / "0002_failure.py").write_text(
-                "from alembic import op\nrevision='0002'\ndown_revision='0001'\n"
+            head = ScriptDirectory.from_config(
+                Config(str(BACKEND / "alembic.ini"))
+            ).get_current_head()
+            (root / "migrations" / "versions" / "test_failure.py").write_text(
+                f"from alembic import op\nrevision='test_failure'\ndown_revision={head!r}\n"
                 "def upgrade():\n"
                 "    op.execute('CREATE TABLE rollback_probe(id integer)')\n"
                 "    op.execute(\"SELECT 'secret-sentinel'::integer\")\n"
@@ -231,5 +278,5 @@ class MigrationIntegrationTests(unittest.TestCase):
             self.assertNotIn("During handling", result.stderr)
         self.assertIsNone(self.query("SELECT to_regclass('rollback_probe')")[0][0])
         self.assertEqual(
-            self.query("SELECT version_num FROM alembic_version")[0][0], "0001"
+            self.query("SELECT version_num FROM alembic_version")[0][0], "0002"
         )

@@ -1,4 +1,4 @@
-"""Single metadata registry for the application's future domain models."""
+"""Declarative base and naming convention shared by all domain models."""
 
 from sqlalchemy import MetaData
 from sqlalchemy.orm import DeclarativeBase

@@ -8,13 +8,13 @@ from alembic.util import CommandError
 from sqlalchemy.engine import Connection
 
 from financeiq.core.config import load_migration_settings
-from financeiq.db.base import Base
 from financeiq.db.errors import finish_cleanup
+from financeiq.db.models import metadata
 from financeiq.db.session import create_migration_engine
 
 
 def run_migrations(connection: Connection) -> None:
-    context.configure(connection=connection, target_metadata=Base.metadata)
+    context.configure(connection=connection, target_metadata=metadata)
     with context.begin_transaction():
         context.run_migrations()
 
@@ -37,7 +37,7 @@ try:
     if context.is_offline_mode():
         context.configure(
             dialect_name="postgresql",
-            target_metadata=Base.metadata,
+            target_metadata=metadata,
             literal_binds=True,
         )
         with context.begin_transaction():

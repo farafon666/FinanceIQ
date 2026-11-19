@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy.pool import NullPool
 
 from financeiq.core.config import MigrationSettings
@@ -41,6 +43,8 @@ class MigrationCommandTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("CREATE TABLE alembic_version", result.stdout)
         self.assertIn("0001", result.stdout)
+        self.assertIn("CREATE TABLE users", result.stdout)
+        self.assertIn("CREATE TABLE auth_sessions", result.stdout)
         self.assertNotIn("secret-sentinel", result.stdout + result.stderr)
 
     def test_online_does_not_fall_back_to_runtime_credentials(self) -> None:
@@ -53,7 +57,19 @@ class MigrationCommandTests(unittest.TestCase):
     def test_history_has_one_head_without_loading_credentials(self) -> None:
         result = self.run_alembic("heads")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "0001 (head)")
+        self.assertEqual(result.stdout.strip(), "0002 (head)")
+
+    def test_offline_downgrade_includes_guard_without_credentials(self) -> None:
+        result = self.run_alembic("downgrade", "0002:0001", "--sql")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "LOCK TABLE users, auth_sessions IN ACCESS EXCLUSIVE MODE", result.stdout
+        )
+        self.assertIn("Cannot downgrade nonempty Auth tables", result.stdout)
+        self.assertLess(
+            result.stdout.index("IF EXISTS"), result.stdout.index("DROP TABLE")
+        )
+        self.assertNotIn("secret-sentinel", result.stdout + result.stderr)
 
     def test_connection_failure_is_safe(self) -> None:
         result = self.run_alembic(
@@ -85,10 +101,13 @@ class MigrationCommandTests(unittest.TestCase):
                 "[alembic]\nscript_location = %(here)s/migrations\n", encoding="utf-8"
             )
             result = self.run_alembic(
-                "-c", str(config), "revision", "--rev-id", "0002", "-m", "probe"
+                "-c", str(config), "revision", "--rev-id", "test_probe", "-m", "probe"
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            revision = next((root / "migrations" / "versions").glob("0002_*.py"))
+            revision = next((root / "migrations" / "versions").glob("test_probe_*.py"))
             namespace = runpy.run_path(str(revision))
-            self.assertEqual(namespace["revision"], "0002")
-            self.assertEqual(namespace["down_revision"], "0001")
+            self.assertEqual(namespace["revision"], "test_probe")
+            head = ScriptDirectory.from_config(
+                Config(str(BACKEND / "alembic.ini"))
+            ).get_current_head()
+            self.assertEqual(namespace["down_revision"], head)
