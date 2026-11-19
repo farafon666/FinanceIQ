@@ -1,7 +1,7 @@
 """Shared audit persistence; financial meaning belongs to the scenario's service.
 
-Task 2.2 supports Accounts actions only. Import references, transaction elements,
-and the remaining action types arrive with their owning modules.
+Accounts and Imports actions are supported. Transaction elements and the
+remaining action types arrive with Transactions in task 2.5.
 """
 
 from datetime import datetime
@@ -32,13 +32,21 @@ class FinancialAction(Base):
         CheckConstraint("isfinite(created_at)", name="created_at_finite"),
         CheckConstraint(
             "action_type IN ('confirm_balance', 'revoke_balance', 'confirm_history', "
-            "'revoke_history', 'archive_account', 'restore_account')",
+            "'revoke_history', 'archive_account', 'restore_account', "
+            "'import_confirm', 'import_cancel')",
             name="action_type_valid",
         ),
         CheckConstraint("plan_version > 0", name="plan_version_positive"),
         CheckConstraint("schema_version > 0", name="schema_version_positive"),
         CheckConstraint("octet_length(plan_digest) = 32", name="plan_digest_length"),
         CheckConstraint("jsonb_typeof(details) = 'object'", name="details_object"),
+        ForeignKeyConstraint(
+            ["user_id", "source_attempt_id"],
+            ["import_attempts.user_id", "import_attempts.id"],
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+            use_alter=True,
+        ),
         ForeignKeyConstraint(
             ["user_id", "account_id"],
             ["accounts.user_id", "accounts.id"],
@@ -62,6 +70,7 @@ class FinancialAction(Base):
     plan_digest: Mapped[bytes] = mapped_column(LargeBinary)
     schema_version: Mapped[int] = mapped_column(SmallInteger, server_default=text("1"))
     account_id: Mapped[UUID | None] = mapped_column()
+    source_attempt_id: Mapped[UUID | None] = mapped_column()
     reason_code: Mapped[str | None] = mapped_column(Text)
     reason: Mapped[str | None] = mapped_column(Text)
     details: Mapped[dict[str, object]] = mapped_column(JSONB)

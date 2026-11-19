@@ -9,6 +9,14 @@ from financeiq.modules.accounts.models import (
 )
 from financeiq.modules.auth.models import AuthSession, User
 from financeiq.modules.categories.models import CategorizationRule, Category
+from financeiq.modules.imports.models import (
+    ImportAccountMapping,
+    ImportAttempt,
+    ImportBatch,
+    ImportCancellation,
+    ImportMovement,
+    ImportRow,
+)
 
 __all__ = [
     "Account",
@@ -18,6 +26,12 @@ __all__ = [
     "Category",
     "FinancialAction",
     "HistoryConfirmation",
+    "ImportAccountMapping",
+    "ImportAttempt",
+    "ImportBatch",
+    "ImportCancellation",
+    "ImportMovement",
+    "ImportRow",
     "User",
     "metadata",
 ]

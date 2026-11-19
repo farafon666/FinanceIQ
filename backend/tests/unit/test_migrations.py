@@ -52,6 +52,12 @@ class MigrationCommandTests(unittest.TestCase):
             "history_confirmations",
             "categories",
             "categorization_rules",
+            "import_batches",
+            "import_attempts",
+            "import_account_mappings",
+            "import_rows",
+            "import_movements",
+            "import_cancellations",
         ):
             self.assertIn(f"CREATE TABLE {table}", result.stdout)
         self.assertNotIn("secret-sentinel", result.stdout + result.stderr)
@@ -66,7 +72,22 @@ class MigrationCommandTests(unittest.TestCase):
     def test_history_has_one_head_without_loading_credentials(self) -> None:
         result = self.run_alembic("heads")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "0004 (head)")
+        self.assertEqual(result.stdout.strip(), "0005 (head)")
+
+    def test_imports_offline_downgrade_checks_data_before_drop(self) -> None:
+        result = self.run_alembic("downgrade", "0005:0004", "--sql")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("IN ACCESS EXCLUSIVE MODE", result.stdout)
+        self.assertIn(
+            "Cannot downgrade nonempty Imports or import audit", result.stdout
+        )
+        self.assertLess(
+            result.stdout.index("IF EXISTS"), result.stdout.index("DROP TABLE")
+        )
+        self.assertIn("DROP FUNCTION guard_import_content()", result.stdout)
+        self.assertIn("DROP COLUMN source_attempt_id", result.stdout)
+        self.assertNotIn("DROP TABLE accounts", result.stdout)
+        self.assertNotIn("secret-sentinel", result.stdout + result.stderr)
 
     def test_categories_offline_downgrade_checks_data_before_drop(self) -> None:
         result = self.run_alembic("downgrade", "0004:0003", "--sql")
