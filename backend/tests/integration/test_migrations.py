@@ -74,7 +74,7 @@ class MigrationIntegrationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_history_roundtrip_and_domain_schema(self) -> None:
-        self.assertEqual(self.database.alembic("current").stdout.strip(), "0005 (head)")
+        self.assertEqual(self.database.alembic("current").stdout.strip(), "0006 (head)")
         self.assertEqual(self.database.alembic("upgrade", "head").returncode, 0)
         self.assertEqual(self.database.alembic("downgrade", "base").returncode, 0)
         self.assertEqual(self.query("SELECT * FROM alembic_version"), [])
@@ -94,6 +94,7 @@ class MigrationIntegrationTests(unittest.TestCase):
                 "balance_confirmations",
                 "categories",
                 "categorization_rules",
+                "financial_action_transactions",
                 "financial_actions",
                 "history_confirmations",
                 "import_account_mappings",
@@ -102,6 +103,8 @@ class MigrationIntegrationTests(unittest.TestCase):
                 "import_cancellations",
                 "import_movements",
                 "import_rows",
+                "transactions",
+                "transfer_links",
                 "users",
             ],
         )
@@ -134,7 +137,7 @@ class MigrationIntegrationTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("Migration operation failed.", result.stderr)
             self.assertEqual(
-                self.query("SELECT version_num FROM alembic_version")[0][0], "0005"
+                self.query("SELECT version_num FROM alembic_version")[0][0], "0006"
             )
             self.assertEqual(self.query("SELECT count(*) FROM users")[0][0], 1)
             self.assertEqual(
@@ -232,7 +235,7 @@ class MigrationIntegrationTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("Migration operation failed.", result.stderr)
             self.assertEqual(
-                self.query("SELECT version_num FROM alembic_version")[0][0], "0005"
+                self.query("SELECT version_num FROM alembic_version")[0][0], "0006"
             )
             self.assertEqual(
                 self.query("SELECT count(*) FROM financial_actions")[0][0], 1
@@ -349,7 +352,7 @@ class MigrationIntegrationTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("Migration operation failed.", result.stderr)
             self.assertEqual(
-                self.query("SELECT version_num FROM alembic_version")[0][0], "0005"
+                self.query("SELECT version_num FROM alembic_version")[0][0], "0006"
             )
             self.assertEqual(self.query("SELECT count(*) FROM categories")[0][0], 1)
             self.assertEqual(
@@ -467,7 +470,7 @@ class MigrationIntegrationTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("Migration operation failed.", result.stderr)
                 self.assertEqual(
-                    self.query("SELECT version_num FROM alembic_version")[0][0], "0005"
+                    self.query("SELECT version_num FROM alembic_version")[0][0], "0006"
                 )
                 table = "import_batches" if kind == "batch" else "financial_actions"
                 self.assertEqual(self.query(f"SELECT count(*) FROM {table}")[0][0], 1)
@@ -604,5 +607,5 @@ class MigrationIntegrationTests(unittest.TestCase):
             self.assertNotIn("During handling", result.stderr)
         self.assertIsNone(self.query("SELECT to_regclass('rollback_probe')")[0][0])
         self.assertEqual(
-            self.query("SELECT version_num FROM alembic_version")[0][0], "0005"
+            self.query("SELECT version_num FROM alembic_version")[0][0], "0006"
         )

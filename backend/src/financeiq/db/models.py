@@ -1,7 +1,7 @@
 """Explicit registry of domain mappings for Alembic and schema inspection."""
 
 from financeiq.db.base import Base
-from financeiq.db.financial_actions import FinancialAction
+from financeiq.db.financial_actions import FinancialAction, FinancialActionTransaction
 from financeiq.modules.accounts.models import (
     Account,
     BalanceConfirmation,
@@ -17,6 +17,7 @@ from financeiq.modules.imports.models import (
     ImportMovement,
     ImportRow,
 )
+from financeiq.modules.transactions.models import Transaction, TransferLink
 
 __all__ = [
     "Account",
@@ -25,6 +26,7 @@ __all__ = [
     "CategorizationRule",
     "Category",
     "FinancialAction",
+    "FinancialActionTransaction",
     "HistoryConfirmation",
     "ImportAccountMapping",
     "ImportAttempt",
@@ -32,6 +34,8 @@ __all__ = [
     "ImportCancellation",
     "ImportMovement",
     "ImportRow",
+    "Transaction",
+    "TransferLink",
     "User",
     "metadata",
 ]

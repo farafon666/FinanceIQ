@@ -1,7 +1,6 @@
 """Shared audit persistence; financial meaning belongs to the scenario's service.
 
-Accounts and Imports actions are supported. Transaction elements and the
-remaining action types arrive with Transactions in task 2.5.
+Stores actions and immutable before/after elements, without interpreting plans.
 """
 
 from datetime import datetime
@@ -33,7 +32,9 @@ class FinancialAction(Base):
         CheckConstraint(
             "action_type IN ('confirm_balance', 'revoke_balance', 'confirm_history', "
             "'revoke_history', 'archive_account', 'restore_account', "
-            "'import_confirm', 'import_cancel')",
+            "'import_confirm', 'import_cancel', 'set_kind', 'set_category', "
+            "'confirm_transfer', 'replace_transfer', 'unlink_transfer', "
+            "'link_refund', 'unlink_refund', 'confirm_unlinked_refund')",
             name="action_type_valid",
         ),
         CheckConstraint("plan_version > 0", name="plan_version_positive"),
@@ -74,3 +75,41 @@ class FinancialAction(Base):
     reason_code: Mapped[str | None] = mapped_column(Text)
     reason: Mapped[str | None] = mapped_column(Text)
     details: Mapped[dict[str, object]] = mapped_column(JSONB)
+
+
+class FinancialActionTransaction(Base):
+    __tablename__ = "financial_action_transactions"
+    __table_args__ = (
+        CheckConstraint("isfinite(created_at)", name="created_at_finite"),
+        CheckConstraint(
+            "jsonb_typeof(before_state) = 'object'", name="before_state_object"
+        ),
+        CheckConstraint(
+            "jsonb_typeof(after_state) = 'object'", name="after_state_object"
+        ),
+        ForeignKeyConstraint(
+            ["user_id", "action_id"],
+            ["financial_actions.user_id", "financial_actions.id"],
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["user_id", "transaction_id"],
+            ["transactions.user_id", "transactions.id"],
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        UniqueConstraint("user_id", "action_id", "transaction_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT", onupdate="RESTRICT")
+    )
+    action_id: Mapped[UUID] = mapped_column()
+    transaction_id: Mapped[UUID] = mapped_column()
+    before_state: Mapped[dict[str, object]] = mapped_column(JSONB)
+    after_state: Mapped[dict[str, object]] = mapped_column(JSONB)

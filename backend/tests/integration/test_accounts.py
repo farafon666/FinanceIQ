@@ -355,7 +355,7 @@ async def test_exact_balance_storage(
         ("accounts", {"archived_at": "'infinity'"}, "23514"),
         ("accounts", {"created_at": "'-infinity'"}, "23514"),
         ("financial_actions", {"request_id": "NULL"}, "23502"),
-        ("financial_actions", {"action_type": "'set_kind'"}, "23514"),
+        ("financial_actions", {"action_type": "'SET_KIND'"}, "23514"),
         ("financial_actions", {"action_type": "'unknown'"}, "23514"),
         ("financial_actions", {"plan_version": "0"}, "23514"),
         ("financial_actions", {"schema_version": "0"}, "23514"),

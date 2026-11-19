@@ -1,4 +1,4 @@
-"""Import staging and permanent provenance; transaction results arrive in 2.5."""
+"""Import staging and permanent provenance, including financial results."""
 
 from datetime import date, datetime
 from decimal import Decimal
@@ -294,6 +294,29 @@ class ImportMovement(_ImportRecord, Base):
         CheckConstraint(
             "decision IN ('pending','insert','link')", name="decision_valid"
         ),
+        CheckConstraint(
+            "(decision <> 'pending' OR result_transaction_id IS NULL) "
+            "AND (decision <> 'link' OR result_transaction_id IS NOT NULL)",
+            name="decision_result_valid",
+        ),
+        ForeignKeyConstraint(
+            ["user_id", "account_id", "result_transaction_id"],
+            ["transactions.user_id", "transactions.account_id", "transactions.id"],
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+            use_alter=True,
+        ),
+        ForeignKeyConstraint(
+            ["user_id", "result_transaction_id"],
+            ["transactions.user_id", "transactions.id"],
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+            use_alter=True,
+        ),
         ForeignKeyConstraint(
             ["user_id", "attempt_id", "row_id"],
             ["import_rows.user_id", "import_rows.attempt_id", "import_rows.id"],
@@ -323,6 +346,7 @@ class ImportMovement(_ImportRecord, Base):
         ),
         UniqueConstraint("user_id", "account_id", "id"),
         UniqueConstraint("user_id", "attempt_id", "row_id", "side"),
+        UniqueConstraint("user_id", "attempt_id", "result_transaction_id"),
         Index(
             "ix_import_movements_fingerprint",
             "user_id",
@@ -347,6 +371,7 @@ class ImportMovement(_ImportRecord, Base):
     decision: Mapped[str] = mapped_column(
         Text(collation="C"), server_default=text("'pending'")
     )
+    result_transaction_id: Mapped[UUID | None] = mapped_column()
 
 
 class ImportCancellation(_ImportRecord, Base):
