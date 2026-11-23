@@ -645,12 +645,14 @@ async def test_uniqueness_with_competing_transactions(
             await add_category(first, owner, "Конкурентное имя")
         else:
             await add_rule(first, owner, category, 30)
-            await add_rule(second, owner, category, 30)
 
         async def compete() -> None:
             if table == "categories":
                 await add_category(second, owner, "КОНКУРЕНТНОЕ ИМЯ")
             else:
+                # The owner lock now serializes the write before the deferred
+                # uniqueness check can run at commit.
+                await add_rule(second, owner, category, 30)
                 await second_tx.commit()
 
         contender = asyncio.create_task(compete())

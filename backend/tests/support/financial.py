@@ -163,10 +163,7 @@ async def book(
         ),
         {"id": mapping, "owner": owner, "attempt": attempt, "account": account},
     )
-    results: list[dict[str, object]] = []
-    for index, (amount, fact, movement) in enumerate(
-        zip(amounts, facts, movements, strict=True)
-    ):
+    for index, (amount, movement) in enumerate(zip(amounts, movements, strict=True)):
         row = uuid4()
         await connection.execute(
             text(
@@ -199,16 +196,45 @@ async def book(
                 "day": date.fromisoformat(occurred_on),
             },
         )
-        results.append(
-            {
-                "movement_id": str(movement),
-                "transaction_id": str(fact),
-                "decision": "insert",
-            }
-        )
     value = Book(owner, account, batch, attempt, action_id, facts, movements)
-    if not accept:
-        return value
+    if accept:
+        await accept_book(
+            connection,
+            value,
+            amounts,
+            occurred_on=occurred_on,
+            before_accept=before_accept,
+            audit=audit,
+            result_overrides=result_overrides,
+        )
+    return value
+
+
+async def accept_book(
+    connection: AsyncConnection,
+    value: Book,
+    amounts: tuple[str, ...] = ("-100.00",),
+    *,
+    occurred_on: str = "2026-10-01",
+    before_accept: str | None = None,
+    audit: bool = True,
+    result_overrides: dict[str, object] | None = None,
+) -> None:
+    owner, account, attempt, action_id = (
+        value.owner,
+        value.account,
+        value.attempt,
+        value.action,
+    )
+    facts, movements = value.facts, value.movements
+    results = [
+        {
+            "movement_id": str(movement),
+            "transaction_id": str(fact),
+            "decision": "insert",
+        }
+        for fact, movement in zip(facts, movements, strict=True)
+    ]
     parameters: dict[str, object] = {
         "parse_complete": True,
         "errors": [],
@@ -310,7 +336,6 @@ async def book(
         ),
         {"id": attempt, "action": action_id},
     )
-    return value
 
 
 async def classify(
