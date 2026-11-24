@@ -1,7 +1,7 @@
 """Real PostgreSQL migration/ACL acceptance; Docker is required, never skipped.
 
-Each invocation owns a random --rm container with tmpfs storage. No existing
-database is used. Domain financial guards are covered with stage 2, not these technical probes.
+Tests use disposable containers with tmpfs storage. Financial behavior is covered
+by the dedicated integration suites.
 """
 
 import asyncio
@@ -16,10 +16,83 @@ import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 
+from financeiq.db.models import metadata
 from tests.support.postgres import Role, TestPostgres
 
 BACKEND = Path(__file__).resolve().parents[2]
 pytestmark = pytest.mark.postgres
+
+
+@pytest.mark.asyncio
+async def test_history_roundtrip_and_domain_schema() -> None:
+    expected_domain_tables = {
+        "accounts",
+        "auth_sessions",
+        "balance_confirmations",
+        "categories",
+        "categorization_rules",
+        "financial_action_transactions",
+        "financial_actions",
+        "history_confirmations",
+        "import_account_mappings",
+        "import_attempts",
+        "import_batches",
+        "import_cancellations",
+        "import_movements",
+        "import_rows",
+        "transactions",
+        "transfer_links",
+        "users",
+    }
+    assert set(metadata.tables) == expected_domain_tables
+    version_table = {"alembic_version"}
+    version_query = "SELECT version_num FROM public.alembic_version"
+
+    with TestPostgres() as database:
+        connection = await asyncpg.connect(
+            database.url("financeiq_migrator"), timeout=5
+        )
+        try:
+
+            async def public_tables() -> set[str]:
+                rows = await connection.fetch(
+                    "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+                )
+                return {row["tablename"] for row in rows}
+
+            async def assert_head() -> None:
+                current = database.alembic("current")
+                assert current.returncode == 0, current.stderr
+                assert current.stdout.strip() == "0009 (head)"
+                assert await public_tables() == expected_domain_tables | version_table
+                check = database.alembic("check")
+                assert check.returncode == 0, check.stderr
+
+            assert await public_tables() == set()
+            upgrade = database.alembic("upgrade", "head")
+            assert upgrade.returncode == 0, upgrade.stderr
+            await assert_head()
+
+            repeated_upgrade = database.alembic("upgrade", "head")
+            assert repeated_upgrade.returncode == 0, repeated_upgrade.stderr
+            await assert_head()
+
+            downgrade = database.alembic("downgrade", "base")
+            assert downgrade.returncode == 0, downgrade.stderr
+            assert await public_tables() == version_table
+            assert await connection.fetch(version_query) == []
+
+            baseline = database.alembic("upgrade", "0001")
+            assert baseline.returncode == 0, baseline.stderr
+            assert await public_tables() == version_table
+            versions = await connection.fetch(version_query)
+            assert [row["version_num"] for row in versions] == ["0001"]
+
+            rebuild = database.alembic("upgrade", "head")
+            assert rebuild.returncode == 0, rebuild.stderr
+            await assert_head()
+        finally:
+            await connection.close()
 
 
 class MigrationIntegrationTests(unittest.TestCase):
@@ -72,43 +145,6 @@ class MigrationIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
         result = self.database.alembic("upgrade", "head")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-
-    def test_history_roundtrip_and_domain_schema(self) -> None:
-        self.assertEqual(self.database.alembic("current").stdout.strip(), "0009 (head)")
-        self.assertEqual(self.database.alembic("upgrade", "head").returncode, 0)
-        self.assertEqual(self.database.alembic("downgrade", "base").returncode, 0)
-        self.assertEqual(self.query("SELECT * FROM alembic_version"), [])
-        self.assertEqual(self.database.alembic("upgrade", "0001").returncode, 0)
-        self.assertIsNone(self.query("SELECT to_regclass('users')")[0][0])
-        self.assertIsNone(self.query("SELECT to_regclass('auth_sessions')")[0][0])
-        self.assertEqual(self.database.alembic("upgrade", "head").returncode, 0)
-        tables = self.query(
-            "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename"
-        )
-        self.assertEqual(
-            [row[0] for row in tables],
-            [
-                "accounts",
-                "alembic_version",
-                "auth_sessions",
-                "balance_confirmations",
-                "categories",
-                "categorization_rules",
-                "financial_action_transactions",
-                "financial_actions",
-                "history_confirmations",
-                "import_account_mappings",
-                "import_attempts",
-                "import_batches",
-                "import_cancellations",
-                "import_movements",
-                "import_rows",
-                "transactions",
-                "transfer_links",
-                "users",
-            ],
-        )
-        self.assertEqual(self.database.alembic("check").returncode, 0)
 
     def test_auth_downgrade_preserves_nonempty_tables(self) -> None:
         self.query(
