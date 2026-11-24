@@ -74,7 +74,7 @@ class MigrationIntegrationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_history_roundtrip_and_domain_schema(self) -> None:
-        self.assertEqual(self.database.alembic("current").stdout.strip(), "0008 (head)")
+        self.assertEqual(self.database.alembic("current").stdout.strip(), "0009 (head)")
         self.assertEqual(self.database.alembic("upgrade", "head").returncode, 0)
         self.assertEqual(self.database.alembic("downgrade", "base").returncode, 0)
         self.assertEqual(self.query("SELECT * FROM alembic_version"), [])
@@ -137,7 +137,7 @@ class MigrationIntegrationTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("Migration operation failed.", result.stderr)
             self.assertEqual(
-                self.query("SELECT version_num FROM alembic_version")[0][0], "0008"
+                self.query("SELECT version_num FROM alembic_version")[0][0], "0009"
             )
             self.assertEqual(self.query("SELECT count(*) FROM users")[0][0], 1)
             self.assertEqual(
@@ -353,7 +353,7 @@ class MigrationIntegrationTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("Migration operation failed.", result.stderr)
             self.assertEqual(
-                self.query("SELECT version_num FROM alembic_version")[0][0], "0008"
+                self.query("SELECT version_num FROM alembic_version")[0][0], "0009"
             )
             self.assertEqual(self.query("SELECT count(*) FROM categories")[0][0], 1)
             self.assertEqual(
@@ -610,5 +610,5 @@ class MigrationIntegrationTests(unittest.TestCase):
             self.assertNotIn("During handling", result.stderr)
         self.assertIsNone(self.query("SELECT to_regclass('rollback_probe')")[0][0])
         self.assertEqual(
-            self.query("SELECT version_num FROM alembic_version")[0][0], "0008"
+            self.query("SELECT version_num FROM alembic_version")[0][0], "0009"
         )

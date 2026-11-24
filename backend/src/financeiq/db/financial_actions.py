@@ -11,6 +11,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
+    Index,
     Integer,
     LargeBinary,
     SmallInteger,
@@ -118,6 +119,11 @@ class FinancialActionTransaction(Base):
             onupdate="RESTRICT",
         ),
         UniqueConstraint("user_id", "action_id", "transaction_id"),
+        Index(
+            "ix_financial_action_transactions_user_id_transaction_id",
+            "user_id",
+            "transaction_id",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)

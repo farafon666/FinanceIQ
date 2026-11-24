@@ -348,6 +348,11 @@ class ImportMovement(_ImportRecord, Base):
         UniqueConstraint("user_id", "attempt_id", "row_id", "side"),
         UniqueConstraint("user_id", "attempt_id", "result_transaction_id"),
         Index(
+            "ix_import_movements_user_id_result_transaction_id",
+            "user_id",
+            "result_transaction_id",
+        ),
+        Index(
             "ix_import_movements_fingerprint",
             "user_id",
             "account_id",
@@ -392,6 +397,7 @@ class ImportCancellation(_ImportRecord, Base):
         ),
         UniqueConstraint("user_id", "attempt_id"),
         UniqueConstraint("user_id", "id"),
+        Index("ix_import_cancellations_user_id_action_id", "user_id", "action_id"),
     )
 
     attempt_id: Mapped[UUID] = mapped_column()

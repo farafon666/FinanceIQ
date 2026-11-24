@@ -75,7 +75,7 @@ class MigrationCommandTests(unittest.TestCase):
     def test_history_has_one_head_without_loading_credentials(self) -> None:
         result = self.run_alembic("heads")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "0008 (head)")
+        self.assertEqual(result.stdout.strip(), "0009 (head)")
 
     def test_imports_offline_downgrade_checks_data_before_drop(self) -> None:
         result = self.run_alembic("downgrade", "0005:0004", "--sql")

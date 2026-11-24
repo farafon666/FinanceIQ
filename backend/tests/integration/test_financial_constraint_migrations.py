@@ -85,6 +85,44 @@ def snapshot(database: TestPostgres) -> dict[str, list[asyncpg.Record]]:
     }
 
 
+def test_financial_indexes_roundtrip_preserves_history(
+    constraint_database: TestPostgres,
+) -> None:
+    database = constraint_database
+    result = database.alembic("downgrade", "0008")
+    assert result.returncode == 0, result.stderr
+    assert database.alembic("current").stdout.strip() == "0008"
+
+    async def seed(connection: AsyncConnection) -> None:
+        original = await book(connection, ("-100.00", "-100.00"))
+        await linked_book(connection, original)
+        cancelled = await book(
+            connection, owner=original.owner, account=original.account
+        )
+        await cancel(connection, cancelled)
+
+    command(database, seed)
+    data = snapshot(database)
+    index_sql = "SELECT tablename,indexname,indexdef FROM pg_indexes WHERE schemaname='public' ORDER BY indexname"
+    previous_indexes = query(database, index_sql)
+    for direction, target in (
+        ("upgrade", "0009"),
+        ("downgrade", "0008"),
+        ("upgrade", "0009"),
+    ):
+        result = database.alembic(direction, target)
+        assert result.returncode == 0, result.stderr
+        assert snapshot(database) == data
+        indexes = query(database, index_sql)
+        if target == "0008":
+            assert indexes == previous_indexes
+        else:
+            assert len(indexes) == len(previous_indexes) + 15
+            assert all(index in indexes for index in previous_indexes)
+            check = database.alembic("check")
+            assert check.returncode == 0, check.stderr
+
+
 def test_head_metadata_trigger_timing_and_restricted_functions(
     constraint_database: TestPostgres,
 ) -> None:
@@ -216,7 +254,6 @@ def test_owner_lock_revision_preserves_history_and_trigger_contract(
                 tuple(guard)[1:] == (31, "O", "guard_financial_owner_lock")
                 for guard in guards
             )
-            assert database.alembic("check").returncode == 0
 
     functions = query(
         database,

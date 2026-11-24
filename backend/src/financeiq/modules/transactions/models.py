@@ -23,6 +23,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from financeiq.db.base import Base
 
+_ACTIVE_TRANSACTION = text("cancelled_by_id IS NULL")
+
 
 class _TransactionRecord:
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -111,6 +113,35 @@ class Transaction(_TransactionRecord, Base):
         UniqueConstraint("user_id", "id"),
         UniqueConstraint("user_id", "account_id", "id"),
         UniqueConstraint("user_id", "source_movement_id"),
+        Index(
+            "ix_transactions_active_candidates",
+            "user_id",
+            "account_id",
+            "occurred_on",
+            "amount",
+            postgresql_where=_ACTIVE_TRANSACTION,
+        ),
+        Index(
+            "ix_transactions_active_category",
+            "user_id",
+            "category_id",
+            "occurred_on",
+            postgresql_where=_ACTIVE_TRANSACTION,
+        ),
+        Index(
+            "ix_transactions_active_refunds",
+            "user_id",
+            "refund_of_transaction_id",
+            postgresql_where=_ACTIVE_TRANSACTION,
+        ),
+        *(
+            Index(f"ix_transactions_user_id_{column}", "user_id", column)
+            for column in (
+                "cancelled_by_id",
+                "refund_of_transaction_id",
+                "refund_action_id",
+            )
+        ),
     )
 
     account_id: Mapped[UUID] = mapped_column()
@@ -133,6 +164,23 @@ class Transaction(_TransactionRecord, Base):
         BigInteger, server_default=text("1"), server_onupdate=FetchedValue()
     )
     cancelled_by_id: Mapped[UUID | None] = mapped_column(server_default=text("NULL"))
+
+
+Index(
+    "ix_transactions_active_list",
+    Transaction.user_id,
+    Transaction.occurred_on.desc(),
+    Transaction.id.desc(),
+    postgresql_where=_ACTIVE_TRANSACTION,
+)
+Index(
+    "ix_transactions_active_account_list",
+    Transaction.user_id,
+    Transaction.account_id,
+    Transaction.occurred_on.desc(),
+    Transaction.id.desc(),
+    postgresql_where=_ACTIVE_TRANSACTION,
+)
 
 
 class TransferLink(_TransactionRecord, Base):
@@ -178,6 +226,15 @@ class TransferLink(_TransactionRecord, Base):
                 ),
             )
             for role in ("outgoing", "incoming")
+        ),
+        *(
+            Index(f"ix_transfer_links_user_id_{column}", "user_id", column)
+            for column in (
+                "outgoing_transaction_id",
+                "incoming_transaction_id",
+                "confirmation_action_id",
+                "ended_by_action_id",
+            )
         ),
     )
 
