@@ -183,7 +183,7 @@ class ComposeIntegrationTests(unittest.TestCase):
         current = self.compose(
             "run", "--rm", "--no-deps", "migrate", "migrate", "current"
         )
-        self.assertIn("0009 (head)", current.stdout)
+        self.assertIn("0010 (head)", current.stdout)
         self.compose("run", "--rm", "--no-deps", "migrate", "migrate", "check")
 
         for service, target in (

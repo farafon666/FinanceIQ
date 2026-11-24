@@ -120,6 +120,34 @@ async def test_transfer_pairs_validate_both_roles_accounts_amounts_and_evidence(
 
 
 @pytest.mark.parametrize(
+    "parameters",
+    [
+        {},
+        {"transfer_links": None},
+        {"transfer_links": {"outgoing_transaction_id": None}},
+        {"transfer_links": [{"outgoing_transaction_id": None}]},
+    ],
+)
+async def test_transfer_requires_selected_sides_in_accepted_plan(
+    financial_engine: AsyncEngine, parameters: dict[str, object]
+) -> None:
+    async with financial_engine.begin() as connection:
+        original = await book(connection)
+        fact = original.facts[0]
+        before = await snapshot(connection, fact)
+
+    async with rejected(financial_engine) as connection:
+        await transfer(connection, original, fact, parameters_override=parameters)
+
+    async with financial_engine.connect() as connection:
+        assert await snapshot(connection, fact) == before
+        assert await connection.scalar(text("SELECT count(*) FROM transfer_links")) == 0
+        assert (
+            await connection.scalar(text("SELECT count(*) FROM financial_actions")) == 1
+        )
+
+
+@pytest.mark.parametrize(
     "amounts", [("-100.00", "30.00", "70.00"), ("100.00", "-30.00", "-70.00")]
 )
 async def test_partial_refunds_at_exact_limit_are_valid(
@@ -237,6 +265,46 @@ async def test_unlinked_refund_needs_both_acknowledgements(
     else:
         async with financial_engine.begin() as connection:
             await command(connection)
+
+
+@pytest.mark.parametrize(
+    ("action_type", "has_original", "consents"),
+    [
+        ("confirm_unlinked_refund", True, []),
+        ("confirm_unlinked_refund", True, ["unlinked_refund", "unverified_limit"]),
+        ("link_refund", False, ["unlinked_refund", "unverified_limit"]),
+    ],
+)
+async def test_refund_action_type_must_describe_the_original_link(
+    financial_engine: AsyncEngine,
+    action_type: str,
+    has_original: bool,
+    consents: list[str],
+) -> None:
+    async with financial_engine.begin() as connection:
+        value = await book(connection, ("-100.00", "30.00"))
+        original, refund = value.facts
+        before = await snapshot(connection, refund)
+
+    async with rejected(financial_engine) as connection:
+        await classify(
+            connection,
+            value,
+            refund,
+            kind=action_type,
+            changes={
+                "kind": "refund",
+                "refund_of_transaction_id": original if has_original else None,
+                "category_origin": "none" if has_original else "manual",
+            },
+            consents=consents,
+        )
+
+    async with financial_engine.connect() as connection:
+        assert await snapshot(connection, refund) == before
+        assert (
+            await connection.scalar(text("SELECT count(*) FROM financial_actions")) == 1
+        )
 
 
 @pytest.mark.parametrize(
@@ -894,14 +962,41 @@ async def test_new_attempt_cannot_hide_behind_immediate_abandonment(
         )
 
 
-async def test_saved_classification_survives_later_changes(
+async def test_confirm_rejects_a_classification_from_before_acceptance(
     financial_engine: AsyncEngine,
 ) -> None:
     async with financial_engine.begin() as connection:
         value = await book(connection)
-        linked = await linked_book(connection, value)
+        fact = value.facts[0]
+        stale = await snapshot(connection, fact)
     async with financial_engine.begin() as connection:
-        await classify(connection, value, value.facts[0])
+        await classify(connection, value, fact)
+        actual = await snapshot(connection, fact)
+
+    async with rejected(financial_engine) as connection:
+        await linked_book(connection, value, saved_classification=stale)
+
+    async with financial_engine.connect() as connection:
+        assert await snapshot(connection, fact) == actual
+        for table in ("import_batches", "import_attempts", "import_movements"):
+            assert await connection.scalar(text(f"SELECT count(*) FROM {table}")) == 1
+        assert (
+            await connection.scalar(text("SELECT count(*) FROM financial_actions")) == 2
+        )
+
+
+@pytest.mark.parametrize("same_transaction", [False, True])
+async def test_saved_classification_survives_later_changes(
+    financial_engine: AsyncEngine, same_transaction: bool
+) -> None:
+    async with financial_engine.begin() as connection:
+        value = await book(connection)
+        linked = await linked_book(connection, value)
+        if same_transaction:
+            await classify(connection, value, value.facts[0])
+    if not same_transaction:
+        async with financial_engine.begin() as connection:
+            await classify(connection, value, value.facts[0])
     async with financial_engine.connect() as connection:
         for identity in (value.action, linked.action):
             result = await connection.scalar(

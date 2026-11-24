@@ -379,6 +379,7 @@ async def transfer(
     incoming: UUID | None = None,
     *,
     consents: list[str] | None = None,
+    parameters_override: dict[str, object] | None = None,
 ) -> UUID:
     identity, action_id = uuid4(), uuid4()
     sides = [side for side in (outgoing, incoming) if side is not None]
@@ -388,7 +389,9 @@ async def transfer(
         value.owner,
         "confirm_transfer",
         identity=action_id,
-        parameters={
+        parameters=parameters_override
+        if parameters_override is not None
+        else {
             "transfer_links": [
                 {
                     "id": str(identity),
@@ -568,6 +571,7 @@ async def linked_book(
     original: Book,
     *,
     transfer_pair: tuple[UUID, UUID] | None = None,
+    saved_classification: dict[str, object] | None = None,
 ) -> Book:
     stage = await book(
         connection, owner=original.owner, account=original.account, accept=False
@@ -624,7 +628,14 @@ async def linked_book(
             "source_row_count": 1,
             "movement_count": 1,
             "facts": [],
-            "classifications": [{"transaction_id": str(fact), "state": classification}],
+            "classifications": [
+                {
+                    "transaction_id": str(fact),
+                    "state": classification
+                    if saved_classification is None
+                    else saved_classification,
+                }
+            ],
             "transaction_ids": [str(side) for side in transfer_pair]
             if transfer_pair
             else [],

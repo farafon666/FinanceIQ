@@ -21,6 +21,7 @@ from tests.support.financial import (
     classify,
     confirmation,
     linked_book,
+    snapshot,
     transfer,
 )
 
@@ -227,6 +228,39 @@ async def test_concurrent_confirm_reads_saved_result_after_waiting(
         assert (
             await connection.scalar(text("SELECT count(*) FROM financial_actions")) == 1
         )
+
+
+async def test_confirm_rejects_stale_classification_after_waiting(
+    financial_engine: AsyncEngine,
+) -> None:
+    async with financial_engine.begin() as connection:
+        value = await book(connection)
+        fact = value.facts[0]
+        stale = await snapshot(connection, fact)
+
+    async def reclassify(connection: AsyncConnection) -> None:
+        await classify(connection, value, fact)
+
+    async def confirm(connection: AsyncConnection) -> None:
+        await take_root(connection, value.owner)
+        await linked_book(connection, value, saved_classification=stale)
+
+    assert await race(financial_engine, reclassify, confirm) == "23514"
+    async with financial_engine.begin() as connection:
+        current = await snapshot(connection, fact)
+        assert current["kind"] == "unclassified"
+        assert (
+            await connection.scalar(text("SELECT count(*) FROM import_attempts")) == 1
+        )
+        linked = await linked_book(connection, value)
+        saved = await connection.scalar(
+            text(
+                "SELECT details->'result'->'classifications'->0->'state' "
+                "FROM financial_actions WHERE id=:id"
+            ),
+            {"id": linked.action},
+        )
+        assert saved == current
 
 
 @pytest.mark.parametrize("cancel_first", [False, True])

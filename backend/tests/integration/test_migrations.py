@@ -63,7 +63,7 @@ async def test_history_roundtrip_and_domain_schema() -> None:
             async def assert_head() -> None:
                 current = database.alembic("current")
                 assert current.returncode == 0, current.stderr
-                assert current.stdout.strip() == "0009 (head)"
+                assert current.stdout.strip() == "0010 (head)"
                 assert await public_tables() == expected_domain_tables | version_table
                 check = database.alembic("check")
                 assert check.returncode == 0, check.stderr
@@ -173,7 +173,7 @@ class MigrationIntegrationTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("Migration operation failed.", result.stderr)
             self.assertEqual(
-                self.query("SELECT version_num FROM alembic_version")[0][0], "0009"
+                self.query("SELECT version_num FROM alembic_version")[0][0], "0010"
             )
             self.assertEqual(self.query("SELECT count(*) FROM users")[0][0], 1)
             self.assertEqual(
@@ -389,7 +389,7 @@ class MigrationIntegrationTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("Migration operation failed.", result.stderr)
             self.assertEqual(
-                self.query("SELECT version_num FROM alembic_version")[0][0], "0009"
+                self.query("SELECT version_num FROM alembic_version")[0][0], "0010"
             )
             self.assertEqual(self.query("SELECT count(*) FROM categories")[0][0], 1)
             self.assertEqual(
@@ -646,5 +646,5 @@ class MigrationIntegrationTests(unittest.TestCase):
             self.assertNotIn("During handling", result.stderr)
         self.assertIsNone(self.query("SELECT to_regclass('rollback_probe')")[0][0])
         self.assertEqual(
-            self.query("SELECT version_num FROM alembic_version")[0][0], "0009"
+            self.query("SELECT version_num FROM alembic_version")[0][0], "0010"
         )

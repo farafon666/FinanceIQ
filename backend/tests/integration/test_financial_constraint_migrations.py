@@ -21,6 +21,10 @@ from tests.support.financial import (
     classify,
     confirmation,
     linked_book,
+    transfer,
+)
+from tests.support.financial import (
+    snapshot as transaction_snapshot,
 )
 from tests.support.postgres import TestPostgres
 
@@ -48,16 +52,27 @@ def constraint_database(constraint_postgres: TestPostgres) -> Iterator[TestPostg
 
 
 def command[T](
-    database: TestPostgres, operation: Callable[[AsyncConnection], Awaitable[T]]
+    database: TestPostgres,
+    operation: Callable[[AsyncConnection], Awaitable[T]],
+    *,
+    runtime: bool = False,
 ) -> T:
     async def run() -> T:
-        engine = create_migration_engine(
-            MigrationSettings(
-                migration_database_url=database.url(
-                    "financeiq_migrator", sqlalchemy=True
+        if runtime:
+            engine = create_engine(
+                Settings(
+                    app_env="test",
+                    database_url=database.url("financeiq_runtime", sqlalchemy=True),
                 )
             )
-        )
+        else:
+            engine = create_migration_engine(
+                MigrationSettings(
+                    migration_database_url=database.url(
+                        "financeiq_migrator", sqlalchemy=True
+                    )
+                )
+            )
         try:
             async with engine.begin() as connection:
                 return await operation(connection)
@@ -119,6 +134,96 @@ def test_financial_indexes_roundtrip_preserves_history(
         else:
             assert len(indexes) == len(previous_indexes) + 15
             assert all(index in indexes for index in previous_indexes)
+
+
+def financial_functions(database: TestPostgres) -> list[asyncpg.Record]:
+    return query(
+        database,
+        "SELECT proname, pg_get_functiondef(p.oid), proacl FROM pg_proc p "
+        "JOIN pg_namespace n ON n.oid=p.pronamespace "
+        "WHERE n.nspname='public' AND starts_with(proname,'financial_') "
+        "ORDER BY proname",
+    )
+
+
+@pytest.mark.parametrize("defect", ["transfer", "refund"])
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_evidence_upgrade_rejects_committed_legacy_violations(
+    constraint_database: TestPostgres, defect: str, cancelled: bool
+) -> None:
+    database = constraint_database
+    assert database.alembic("downgrade", "0009").returncode == 0
+
+    async def seed(connection: AsyncConnection) -> None:
+        value = await book(connection, ("-100.00", "30.00"))
+        original, refund = value.facts
+        if defect == "transfer":
+            await transfer(connection, value, original, parameters_override={})
+        else:
+            await classify(
+                connection,
+                value,
+                refund,
+                kind="confirm_unlinked_refund",
+                changes={"kind": "refund", "refund_of_transaction_id": original},
+            )
+        if cancelled:
+            await cancel(connection, value)
+
+    command(database, seed, runtime=True)
+    data = snapshot(database)
+    functions = financial_functions(database)
+    sql = database.alembic("upgrade", "0009:0010", "--sql")
+    assert sql.returncode == 0, sql.stderr
+    raw_result = database.psql("\\set VERBOSITY verbose\n" + sql.stdout, check=False)
+    assert raw_result.returncode != 0
+    assert "23514" in raw_result.stderr
+    result = database.alembic("--raiseerr", "upgrade", "head")
+    assert result.returncode != 0
+    assert "Migration operation failed." in result.stderr
+    assert database.alembic("current").stdout.strip() == "0009"
+    assert snapshot(database) == data
+    assert financial_functions(database) == functions
+
+
+def test_evidence_revision_roundtrip_preserves_legacy_import_results(
+    constraint_database: TestPostgres,
+) -> None:
+    database = constraint_database
+    assert database.alembic("downgrade", "0009").returncode == 0
+
+    async def seed(connection: AsyncConnection) -> None:
+        value = await book(connection, ("-100.00", "30.00", "-50.00"))
+        original, refund, outgoing = value.facts
+        await transfer(connection, value, outgoing)
+        await classify(
+            connection,
+            value,
+            refund,
+            kind="link_refund",
+            changes={"kind": "refund", "refund_of_transaction_id": original},
+        )
+        link_source = await book(connection, owner=value.owner)
+        fact = link_source.facts[0]
+        stale = await transaction_snapshot(connection, fact)
+        await linked_book(connection, link_source)
+        await classify(connection, link_source, fact)
+        await linked_book(connection, link_source, saved_classification=stale)
+
+    command(database, seed, runtime=True)
+    data = snapshot(database)
+    functions = financial_functions(database)
+    for direction, target in (
+        ("upgrade", "head"),
+        ("downgrade", "0009"),
+        ("upgrade", "head"),
+    ):
+        result = database.alembic(direction, target)
+        assert result.returncode == 0, result.stderr
+        assert snapshot(database) == data
+        if target == "0009":
+            assert financial_functions(database) == functions
+        else:
             check = database.alembic("check")
             assert check.returncode == 0, check.stderr
 
@@ -145,6 +250,7 @@ def test_head_metadata_trigger_timing_and_restricted_functions(
     } <= deferred
     for row in rows:
         if row[0] in (
+            "financial_accept_guard",
             "financial_prepare_fact",
             "financial_fact_effects",
             "financial_guard_action",
