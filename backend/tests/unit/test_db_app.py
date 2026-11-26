@@ -155,7 +155,15 @@ class DatabaseApplicationTests(unittest.TestCase):
 
     def assert_safe_response(self, response: Response, logs: Sequence[str]) -> None:
         self.assertEqual(response.status_code, 500)
-        self.assertEqual(response.json(), {"detail": "Database operation failed."})
+        self.assertEqual(
+            response.json(),
+            {
+                "error": {
+                    "code": "internal_error",
+                    "message": "Не удалось обработать запрос.",
+                }
+            },
+        )
         rendered = response.text + "\n".join(logs)
         for private in ("secret-sentinel", "private_value", "123.45", "Traceback"):
             self.assertNotIn(private, rendered)

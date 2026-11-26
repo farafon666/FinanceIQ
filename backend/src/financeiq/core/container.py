@@ -86,6 +86,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
                     "uvicorn",
                     "financeiq.main:create_app",
                     "--factory",
+                    "--no-access-log",
                     "--host",
                     "0.0.0.0",
                     "--port",

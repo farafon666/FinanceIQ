@@ -60,7 +60,7 @@ backend/
     └── support/                 # одноразовая PostgreSQL и технические фабрики
 ```
 
-`main.py` содержит фабрику приложения, `api` — HTTP-границу с общим router `/api/v1` и health endpoint, `core` — конфигурацию и lifecycle, `db` — инфраструктуру БД, `shared` — общие примитивы. Бизнес-модули пока содержат только `__init__.py`; файлы слоев добавляются вместе с соответствующей функциональностью. Alembic и техническая начальная ревизия добавлены в 1.6; в 1.8 подключены pytest и общие технические фабрики/фикстуры.
+`main.py` содержит фабрику приложения, `api` — HTTP-границу с общим роутером `/api/v1`, обработчиками ошибок и health endpoint, `core` — конфигурацию и lifecycle, `db` — инфраструктуру БД, `shared` — общие примитивы. В `modules/auth` находится регистрация, а `modules/categories` создаёт начальные категории внутри транзакции регистрации. Alembic и техническая начальная ревизия добавлены в 1.6; в 1.8 подключены pytest и общие технические фабрики/фикстуры.
 
 ## Локальная установка backend
 
@@ -102,7 +102,7 @@ python3.14 -m venv .venv
 | `FINANCEIQ_LOG_LEVEL` | `log_level` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` | `INFO` |
 | `FINANCEIQ_DATABASE_URL` | `database_url` (`SecretStr`) | `postgresql+asyncpg://user:password@host:port/database` | Нет, обязательна |
 
-Имена переменных регистронезависимы; используйте приведенное написание. Значения регистрозависимы: пустая строка, `Production` или `info` являются ошибкой. `development` не включает отладочные endpoints или дополнительные логи. URL должен содержать пользователя, хост и имя базы; порт необязателен, при указании допустим диапазон 1–65535. Неэкранированные пробельные символы запрещены; специальные символы в credentials кодируются через percent-encoding. URL хранится как секрет и исключен из `repr(Settings)`; отсутствие или ошибка URL прерывает создание приложения с безопасным `ConfigurationError`. Полномочия миграций описаны ниже; Auth появится после согласования D-12.
+Имена переменных регистронезависимы. Используйте приведенное написание. Значения регистрозависимы. Пустая строка, `Production` или `info` являются ошибкой. `development` включает локальную регистрацию. URL должен содержать пользователя, хост и имя базы. Порт необязателен, при указании допустим диапазон 1–65535. Неэкранированные пробельные символы запрещены. Специальные символы в credentials кодируются через percent-encoding. URL хранится как секрет и исключен из `repr(Settings)`. Отсутствие или ошибка URL прерывает создание приложения с безопасным `ConfigurationError`. Полномочия миграций описаны ниже.
 
 По умолчанию `load_settings()` читает только окружение процесса. Для CLI-запуска Uvicorn сначала задайте `FINANCEIQ_DATABASE_URL` в том же терминале. Синтетический пример, credentials и имя базы нужно заменить:
 
@@ -142,12 +142,12 @@ backend/.venv/bin/python -c "from pathlib import Path; from financeiq.core.confi
 
 ```powershell
 # PowerShell
-.\.venv\Scripts\python.exe -m uvicorn financeiq.main:create_app --factory --host 127.0.0.1 --port 8000
+.\.venv\Scripts\python.exe -m uvicorn financeiq.main:create_app --factory --host 127.0.0.1 --port 8000 --no-access-log
 ```
 
 ```bash
 # Linux
-.venv/bin/python -m uvicorn financeiq.main:create_app --factory --host 127.0.0.1 --port 8000
+.venv/bin/python -m uvicorn financeiq.main:create_app --factory --host 127.0.0.1 --port 8000 --no-access-log
 ```
 
 В другом терминале проверьте HTTP-приложение:
@@ -177,15 +177,21 @@ ReDoc, OAuth redirect Swagger и непрефиксированные `/docs`, `
 
 ```powershell
 # PowerShell
-.\.venv\Scripts\python.exe -c "from pathlib import Path; import uvicorn; from financeiq.main import create_app; app = create_app(env_file=Path('../.env')); uvicorn.run(app, host='127.0.0.1', port=8000, log_level=app.state.settings.log_level.lower())"
+.\.venv\Scripts\python.exe -c "from pathlib import Path; import uvicorn; from financeiq.main import create_app; app = create_app(env_file=Path('../.env')); uvicorn.run(app, host='127.0.0.1', port=8000, access_log=False, log_level=app.state.settings.log_level.lower())"
 ```
 
 ```bash
 # Linux
-.venv/bin/python -c "from pathlib import Path; import uvicorn; from financeiq.main import create_app; app = create_app(env_file=Path('../.env')); uvicorn.run(app, host='127.0.0.1', port=8000, log_level=app.state.settings.log_level.lower())"
+.venv/bin/python -c "from pathlib import Path; import uvicorn; from financeiq.main import create_app; app = create_app(env_file=Path('../.env')); uvicorn.run(app, host='127.0.0.1', port=8000, access_log=False, log_level=app.state.settings.log_level.lower())"
 ```
 
 В программном примере уровень логов Uvicorn берется из `Settings.log_level`. При запуске через CLI уровень задается параметром Uvicorn `--log-level` (по умолчанию `info`); `FINANCEIQ_LOG_LEVEL` самостоятельно logging не настраивает. Остановка сервера — Ctrl+C.
+
+### Локальная регистрация (3.3)
+
+В `development` и `test` маршрут `POST /api/v1/auth/register` доступен через Swagger UI и принимает `application/json` с полями `email`, `password` и `timezone`. Перед локальной проверкой примените миграции к локальной БД. Укажите ключ IANA, например `Europe/Saratov`. Успешный `201` содержит `id`, канонический `email` и `timezone`. В той же транзакции создаются десять персональных категорий `default_categories_v1`. Повторная регистрация того же канонического email возвращает `409`. Вход выполняется отдельной командой. [D-12](docs/DECISIONS.md#d-12-auth)
+
+В `production` регистрация возвращает `404` до подключения лимитов (3.4) и проверки `Origin` (3.6). В приведённых командах и контейнерном адаптере access-лог Uvicorn отключён, чтобы исходные URL и query string не попадали в логи Auth. Для регистрации в lock-файлы добавлены `argon2-cffi`, `email-validator` и `tzdata`.
 
 ## Локальное окружение Docker Compose
 
@@ -261,7 +267,7 @@ FastAPI lifespan создает отдельные `app.state.engine` и `app.st
 
 Внешний сервис сценария открывает `async with transaction(session)`. Выход без ошибки выполняет один commit, исключение — rollback; после завершения можно открыть следующую транзакцию той же сессии. Внутренние сервисы получают ту же сессию и не делают commit; repository может делать flush. Зависимость только выдает/закрывает сессию и никогда не фиксирует изменения. Незавершенная транзакция откатывается при закрытии. Очистка дожидается rollback/close/dispose даже при повторной отмене задачи; отмена передается дальше, включая случай ошибки очистки. Сбой commit не считается успехом и не вызывает автоматического повтора команды. Потеря связи во время COMMIT может оставлять исход неизвестным; правила восстановления конкретных финансовых команд реализуются вместе с ними.
 
-DB-граница возвращает безопасный `DatabaseError` без исходной цепочки исключений. Необработанная ошибка дает HTTP 500 и строго `{"detail":"Database operation failed."}`; в технический лог попадает только `database_error`. Отключены `echo` и `echo_pool`, включен `hide_parameters`; собственные уникальные логгеры движка/пула подавлены даже при DEBUG предка, root logger не меняется. Ошибки подключения и неизвестные ошибки драйвера при SQL-выполнении санитизируются отдельно: они не всегда являются `SQLAlchemyError`. Доменные ошибки и общий HTTP-контракт остаются на этапе 3. Новых HTTP endpoints для проверки БД нет.
+DB-граница возвращает безопасный `DatabaseError` без исходной цепочки исключений. Необработанная ошибка БД даёт HTTP `500 internal_error` в общем формате API. В технический лог попадает код `database_error`. Отключены `echo` и `echo_pool`, включен `hide_parameters`; собственные уникальные логгеры движка/пула подавлены даже при DEBUG предка, root logger не меняется. Ошибки подключения и неизвестные ошибки драйвера при SQL-выполнении санитизируются отдельно: они не всегда являются `SQLAlchemyError`. [Общие соглашения HTTP API](docs/API_CONVENTIONS.md#1-ошибки-и-валидация)
 
 ## Миграции и полномочия PostgreSQL
 
@@ -325,7 +331,7 @@ Runtime не имеет доступа к `alembic_version`. Права SELECT/I
 
 Ревизия `0006` добавила Transaction, TransferLink и FinancialActionTransaction, полный перечень action_type и result_transaction_id в Imports. В общей metadata 17 таблиц. Оба FK результата движения отложены до commit. Дополнительный FK проверяет владельца при NULL account_id. CHECK/UNIQUE, column-level grants и локальные guards защищают источники и историю. Upgrade отклоняет legacy link без результата с сохранением `0005`. Downgrade `0006 → 0005` допускается при отсутствии новых данных и типов действий и сохраняет прежние модули. [DATABASE_SCHEMA.md, §6.3](docs/DATABASE_SCHEMA.md)
 
-Ревизия `0004`: после технической `0001`, Auth `0002` и Accounts/аудита `0003` создаются categories и categorization_rules по [DATABASE_SCHEMA.md](docs/DATABASE_SCHEMA.md), §4. Downgrade `0004 → 0003` блокирует обе новые таблицы и разрешен только при их пустоте, сохраняя Auth/Accounts. Generated active_priority с отложенным UNIQUE поддерживает атомарный обмен приоритетов. Чистая нормализация имен/шаблонов реализована в Categories (CPython 3.14.10 / Unicode 16.0.0), без скрытых ORM-преобразований и без заполнения начальных категорий миграцией. Downgrade `0003 → 0002` блокирует четыре новые таблицы и разрешен только при их пустоте, сохраняя Auth. Downgrade `0002 → 0001` аналогично защищает Auth-данные. Реализовано только хранение: Auth API и создание начальных категорий остаются на этапе 3, Accounts API и расчет остатка — на этапе 4, сервисы/API Categories — на этапе 5. Семантические проверки C-05 добавлены в 2.7, общий протокол блокировок — в 2.8.
+Ревизия `0004`: после технической `0001`, Auth `0002` и Accounts/аудита `0003` создаются categories и categorization_rules по [DATABASE_SCHEMA.md](docs/DATABASE_SCHEMA.md), §4. Downgrade `0004 → 0003` блокирует обе новые таблицы и разрешен только при их пустоте, сохраняя Auth/Accounts. Generated active_priority с отложенным UNIQUE поддерживает атомарный обмен приоритетов. Чистая нормализация имен/шаблонов реализована в Categories (CPython 3.14.10 / Unicode 16.0.0), без скрытых ORM-преобразований. Начальные категории создаются сервисом регистрации в 3.3. Downgrade `0003 → 0002` блокирует четыре новые таблицы и разрешен только при их пустоте, сохраняя Auth. Downgrade `0002 → 0001` аналогично защищает Auth-данные. Семантические проверки C-05 добавлены в 2.7, общий протокол блокировок — в 2.8.
 
 Offline `--sql` выводит DDL явно в stdout, без подключения или credentials. Online-ошибки конфигурации/подключения/DDL дают ненулевой код и фиксированное `Migration operation failed.` без SQL, параметров и исходной цепочки исключений. Режимы offline и online не настраивают root logging; собственные engine/pool логгеры отключены.
 
@@ -353,7 +359,7 @@ Offline `--sql` выводит DDL явно в stdout, без подключен
 .venv/bin/python -m mypy
 ```
 
-`pytest` без путей запускает только 140 unit-тестов без Docker и PostgreSQL. Существующие `unittest.TestCase` и `IsolatedAsyncioTestCase` сохранены; новые async-сценарии используют pytest-asyncio в strict mode с function-scoped event loop и фикстурами. Импорт тестов использует `importlib`, без изменения `PYTHONPATH`. Неизвестные маркеры и параметры конфигурации отклоняются. Кеш pytest исключен из Git.
+`pytest` без путей запускает только 163 unit-теста без Docker и PostgreSQL. Существующие `unittest.TestCase` и `IsolatedAsyncioTestCase` сохранены; новые async-сценарии используют pytest-asyncio в strict mode с function-scoped event loop и фикстурами. Импорт тестов использует `importlib`, без изменения `PYTHONPATH`. Неизвестные маркеры и параметры конфигурации отклоняются. Кеш pytest исключен из Git.
 
 Unit-тесты проверяют конфигурацию, HTTP, lifecycle, транзакции, отмены и безопасные ошибки с подменой DB-взаимодействия. Реальная PostgreSQL проверяется отдельным набором ниже. Starlette 1.10.0 выдает `StarletteDeprecationWarning` об HTTPX; предупреждение не подавляется.
 
@@ -429,7 +435,7 @@ Auth проверяется на таблицах из настоящих миг
 .venv/bin/python -m pip wheel --no-deps --no-build-isolation --wheel-dir dist .
 ```
 
-`pytest tests` собирает 774 теста, включая 140 unit, 633 PostgreSQL и 1 Compose. Для проверки состава без запуска используйте `python -m pytest tests --collect-only`. Для запуска одного файла передайте его путь вместо каталога.
+`pytest tests` собирает 800 тестов, включая 163 unit, 636 PostgreSQL и 1 Compose. Для проверки состава без запуска используйте `python -m pytest tests --collect-only`. Для запуска одного файла передайте его путь вместо каталога.
 
 ### GitHub Actions
 

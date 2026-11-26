@@ -35,6 +35,7 @@ class ContainerCommandTests(unittest.TestCase):
         _, arguments, environment = execute.call_args.args
         self.assertIn("uvicorn", arguments)
         self.assertIn("--factory", arguments)
+        self.assertIn("--no-access-log", arguments)
         self.assertNotIn("--reload", arguments)
         url = make_url(environment["FINANCEIQ_DATABASE_URL"])
         self.assertEqual(url.username, "financeiq_runtime")

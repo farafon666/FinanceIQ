@@ -59,7 +59,9 @@ class ApplicationTests(unittest.TestCase):
                 self.assertIn("/api/v1/openapi.json", docs.text)
                 self.assertEqual(response.status_code, 200)
                 schema = response.json()
-                self.assertEqual(set(schema["paths"]), {"/api/v1/health"})
+                self.assertEqual(
+                    set(schema["paths"]), {"/api/v1/health", "/api/v1/auth/register"}
+                )
                 operation = schema["paths"]["/api/v1/health"]["get"]
                 self.assertNotIn("security", operation)
                 result = operation["responses"]["200"]["content"]["application/json"]
@@ -68,6 +70,30 @@ class ApplicationTests(unittest.TestCase):
                 self.assertEqual(set(model["properties"]), {"status"})
                 self.assertEqual(model["properties"]["status"]["const"], "ok")
                 self.assertIn("status", model["required"])
+
+    def test_registration_openapi_uses_the_public_error_models(self) -> None:
+        with TestClient(create_app()) as client:
+            schema = client.get("/api/v1/openapi.json").json()
+        operation = schema["paths"]["/api/v1/auth/register"]["post"]
+        models = schema["components"]["schemas"]
+        request = operation["requestBody"]["content"]["application/json"]["schema"]
+        payload = models[request["$ref"].rsplit("/", 1)[1]]
+        self.assertEqual(set(payload["required"]), {"email", "password", "timezone"})
+        self.assertFalse(payload["additionalProperties"])
+        self.assertTrue(payload["properties"]["password"]["writeOnly"])
+
+        responses = operation["responses"]
+        self.assertEqual(set(responses), {"201", "400", "409", "415", "422", "500"})
+        for status, model_name in (
+            ("201", "UserProfile"),
+            ("400", "ErrorResponse"),
+            ("409", "ErrorResponse"),
+            ("415", "ErrorResponse"),
+            ("422", "ValidationErrorResponse"),
+            ("500", "ErrorResponse"),
+        ):
+            actual = responses[status]["content"]["application/json"]["schema"]["$ref"]
+            self.assertEqual(actual, f"#/components/schemas/{model_name}")
 
     def test_production_does_not_expose_documentation(self) -> None:
         os.environ["FINANCEIQ_APP_ENV"] = "production"

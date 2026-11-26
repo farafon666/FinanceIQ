@@ -321,7 +321,7 @@ async def test_http_failure_is_safe_and_next_request_succeeds(
             with caplog.at_level(logging.DEBUG):
                 response = await client.post("/test-failure")
             assert response.status_code == 500
-            assert response.json() == {"detail": "Database operation failed."}
+            assert response.json()["error"]["code"] == "internal_error"
             rendered = response.text + caplog.text
             runtime_postgres.assert_safe(rendered)
             for private in (
