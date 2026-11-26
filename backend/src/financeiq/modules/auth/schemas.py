@@ -11,12 +11,11 @@ from financeiq.modules.auth.domain import (
 )
 
 
-class RegistrationRequest(BaseModel):
+class LoginRequest(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid", hide_input_in_errors=True)
 
     email: str
     password: SecretStr
-    timezone: str
 
     @field_validator("email")
     @classmethod
@@ -27,13 +26,24 @@ class RegistrationRequest(BaseModel):
     @classmethod
     def _password(cls, value: SecretStr) -> SecretStr:
         password = normalize_password(value.get_secret_value())
-        if not 15 <= len(password) <= 128:
+        if len(password) > 128:
             raise ValueError("Password length is outside the allowed range.")
         try:
             password.encode("utf-8")
         except UnicodeEncodeError:
             raise ValueError("Password contains invalid Unicode.") from None
         return SecretStr(password)
+
+
+class RegistrationRequest(LoginRequest):
+    timezone: str
+
+    @field_validator("password")
+    @classmethod
+    def _minimum_password(cls, value: SecretStr) -> SecretStr:
+        if len(value.get_secret_value()) < 15:
+            raise ValueError("Password length is outside the allowed range.")
+        return value
 
     @field_validator("timezone")
     @classmethod

@@ -48,6 +48,7 @@ async def client(
     runtime_postgres: TestPostgres, monkeypatch: pytest.MonkeyPatch
 ) -> AsyncIterator[httpx.AsyncClient]:
     monkeypatch.setenv("FINANCEIQ_APP_ENV", "test")
+    monkeypatch.setenv("FINANCEIQ_AUTH_RATE_LIMIT_SECRET", "ab" * 32)
     monkeypatch.setenv(
         "FINANCEIQ_DATABASE_URL",
         runtime_postgres.url("financeiq_runtime", sqlalchemy=True),

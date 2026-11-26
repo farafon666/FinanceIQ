@@ -1,6 +1,8 @@
 """Validated backend settings without implicit files or import-time loading."""
 
+from ipaddress import IPv4Address, IPv6Address
 from pathlib import Path
+from re import fullmatch
 from typing import Literal
 
 from pydantic import Field, SecretStr, ValidationError, field_validator
@@ -98,6 +100,26 @@ class Settings(_SettingsBase):
     app_env: Literal["development", "test", "production"] = "development"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     database_url: SecretStr = Field(repr=False)
+    auth_rate_limit_secret: SecretStr | None = Field(default=None, repr=False)
+    auth_trusted_proxies: tuple[IPv4Address | IPv6Address, ...] = ()
+
+    @field_validator("auth_rate_limit_secret")
+    @classmethod
+    def validate_auth_secret(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is not None and not fullmatch(
+            r"[0-9a-fA-F]{64}", value.get_secret_value()
+        ):
+            raise ValueError("Invalid Auth rate limit secret.")
+        return value
+
+    @field_validator("auth_trusted_proxies")
+    @classmethod
+    def validate_auth_proxies(
+        cls, value: tuple[IPv4Address | IPv6Address, ...]
+    ) -> tuple[IPv4Address | IPv6Address, ...]:
+        if any("%" in str(address) for address in value):
+            raise ValueError("Invalid trusted proxy address.")
+        return value
 
 
 class MigrationSettings(_SettingsBase):

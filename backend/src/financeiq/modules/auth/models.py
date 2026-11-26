@@ -8,6 +8,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Integer,
     LargeBinary,
     Text,
     func,
@@ -67,3 +68,22 @@ class AuthSession(Base):
     csrf_token_hash: Mapped[bytes] = mapped_column(LargeBinary)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AuthRateLimit(Base):
+    __tablename__ = "auth_rate_limits"
+    __table_args__ = (
+        CheckConstraint(
+            "scope IN ('login_ip', 'login_email', 'register_ip')", name="known_scope"
+        ),
+        CheckConstraint("octet_length(key_digest) = 32", name="key_digest_length"),
+        CheckConstraint("isfinite(window_start)", name="window_start_finite"),
+        CheckConstraint("attempt_count > 0", name="attempt_count_positive"),
+    )
+
+    scope: Mapped[str] = mapped_column(Text, primary_key=True)
+    key_digest: Mapped[bytes] = mapped_column(LargeBinary, primary_key=True)
+    window_start: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), primary_key=True
+    )
+    attempt_count: Mapped[int] = mapped_column(Integer)

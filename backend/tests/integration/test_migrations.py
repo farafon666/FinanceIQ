@@ -17,7 +17,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 
 from financeiq.db.models import metadata
-from tests.support.postgres import Role, TestPostgres
+from tests.support.postgres import REVISION_0006_TABLES, Role, TestPostgres
 
 BACKEND = Path(__file__).resolve().parents[2]
 pytestmark = pytest.mark.postgres
@@ -25,26 +25,8 @@ pytestmark = pytest.mark.postgres
 
 @pytest.mark.asyncio
 async def test_history_roundtrip_and_domain_schema() -> None:
-    expected_domain_tables = {
-        "accounts",
-        "auth_sessions",
-        "balance_confirmations",
-        "categories",
-        "categorization_rules",
-        "financial_action_transactions",
-        "financial_actions",
-        "history_confirmations",
-        "import_account_mappings",
-        "import_attempts",
-        "import_batches",
-        "import_cancellations",
-        "import_movements",
-        "import_rows",
-        "transactions",
-        "transfer_links",
-        "users",
-    }
-    assert set(metadata.tables) == expected_domain_tables
+    expected_tables = REVISION_0006_TABLES | {"auth_rate_limits"}
+    assert set(metadata.tables) == expected_tables
     version_table = {"alembic_version"}
     version_query = "SELECT version_num FROM public.alembic_version"
 
@@ -63,8 +45,8 @@ async def test_history_roundtrip_and_domain_schema() -> None:
             async def assert_head() -> None:
                 current = database.alembic("current")
                 assert current.returncode == 0, current.stderr
-                assert current.stdout.strip() == "0010 (head)"
-                assert await public_tables() == expected_domain_tables | version_table
+                assert current.stdout.strip() == "0011 (head)"
+                assert await public_tables() == expected_tables | version_table
                 check = database.alembic("check")
                 assert check.returncode == 0, check.stderr
 
@@ -173,13 +155,55 @@ class MigrationIntegrationTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("Migration operation failed.", result.stderr)
             self.assertEqual(
-                self.query("SELECT version_num FROM alembic_version")[0][0], "0010"
+                self.query("SELECT version_num FROM alembic_version")[0][0], "0011"
             )
             self.assertEqual(self.query("SELECT count(*) FROM users")[0][0], 1)
             self.assertEqual(
                 self.query("SELECT count(*) FROM auth_sessions")[0][0],
                 int(with_session),
             )
+
+    def test_auth_limit_permissions_and_safe_downgrade(self) -> None:
+        runtime: Role = "financeiq_runtime"
+        self.query(
+            """
+            INSERT INTO auth_rate_limits (scope, key_digest, window_start, attempt_count)
+            VALUES ('register_ip', decode(repeat('ab', 32), 'hex'), now(), 1)
+            """,
+            runtime,
+            execute=True,
+        )
+        try:
+            self.query(
+                "UPDATE auth_rate_limits SET attempt_count = 2", runtime, execute=True
+            )
+            for statement in (
+                "DELETE FROM auth_rate_limits",
+                "UPDATE auth_rate_limits SET window_start = now()",
+            ):
+                with (
+                    self.subTest(statement=statement),
+                    self.assertRaises(asyncpg.InsufficientPrivilegeError),
+                ):
+                    self.query(statement, runtime, execute=True)
+            refused = self.database.alembic("downgrade", "0010")
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertEqual(
+                self.query("SELECT version_num FROM alembic_version")[0][0], "0011"
+            )
+            self.assertEqual(
+                self.query("SELECT attempt_count FROM auth_rate_limits", runtime)[0][0],
+                2,
+            )
+        finally:
+            self.query("DELETE FROM auth_rate_limits", execute=True)
+        downgrade = self.database.alembic("downgrade", "0010")
+        self.assertEqual(downgrade.returncode, 0, downgrade.stderr)
+        self.assertEqual(
+            self.query("SELECT to_regclass('public.auth_rate_limits')")[0][0], None
+        )
+        upgrade = self.database.alembic("upgrade", "head")
+        self.assertEqual(upgrade.returncode, 0, upgrade.stderr)
 
     def test_bootstrap_is_repeatable_without_resetting_passwords(self) -> None:
         self.assertEqual(self.database.bootstrap().returncode, 0)
@@ -389,7 +413,7 @@ class MigrationIntegrationTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("Migration operation failed.", result.stderr)
             self.assertEqual(
-                self.query("SELECT version_num FROM alembic_version")[0][0], "0010"
+                self.query("SELECT version_num FROM alembic_version")[0][0], "0011"
             )
             self.assertEqual(self.query("SELECT count(*) FROM categories")[0][0], 1)
             self.assertEqual(
@@ -646,5 +670,5 @@ class MigrationIntegrationTests(unittest.TestCase):
             self.assertNotIn("During handling", result.stderr)
         self.assertIsNone(self.query("SELECT to_regclass('rollback_probe')")[0][0])
         self.assertEqual(
-            self.query("SELECT version_num FROM alembic_version")[0][0], "0010"
+            self.query("SELECT version_num FROM alembic_version")[0][0], "0011"
         )

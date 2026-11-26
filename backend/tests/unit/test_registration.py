@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from financeiq.main import create_app
 
 REGISTER = "/api/v1/auth/register"
+LOGIN = "/api/v1/auth/login"
 VALID = {
     "email": "private-auth@example.org",
     "password": "Private password marker",
@@ -20,6 +21,7 @@ VALID = {
 @pytest.fixture
 def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     monkeypatch.setenv("FINANCEIQ_APP_ENV", "test")
+    monkeypatch.delenv("FINANCEIQ_AUTH_RATE_LIMIT_SECRET", raising=False)
     monkeypatch.setenv(
         "FINANCEIQ_DATABASE_URL",
         "postgresql+asyncpg://test:unused@127.0.0.1:5432/financeiq_test",
@@ -111,14 +113,38 @@ def test_registration_route_errors_are_not_cached(client: TestClient) -> None:
     assert response.json()["error"]["code"] == "method_not_allowed"
 
 
-def test_production_has_no_registration(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("path", [REGISTER, LOGIN])
+def test_production_has_no_auth_commands(
+    monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
     monkeypatch.setenv("FINANCEIQ_APP_ENV", "production")
     monkeypatch.setenv(
         "FINANCEIQ_DATABASE_URL",
         "postgresql+asyncpg://test:unused@127.0.0.1:5432/financeiq_test",
     )
     with TestClient(create_app()) as client:
-        response = client.post(REGISTER, json=VALID)
+        response = client.post(path, json=VALID)
     assert response.status_code == 404
     assert response.headers["cache-control"] == "no-store"
     assert response.json()["error"]["code"] == "not_found"
+
+
+def test_login_validation_and_missing_secret(client: TestClient) -> None:
+    assert (
+        client.post(
+            LOGIN, content="{}", headers={"Content-Type": "text/plain"}
+        ).status_code
+        == 415
+    )
+    credentials = {"email": VALID["email"], "password": "e\u0301" * 129}
+    response = client.post(LOGIN, json=credentials)
+    assert response.status_code == 422
+    assert response.json()["error"]["fields"] == [
+        {"location": "body", "path": ["password"], "code": "invalid_value"}
+    ]
+    response = client.post(LOGIN, json=credentials | {"password": "short"})
+    assert response.status_code == 500
+    assert response.json()["error"]["code"] == "internal_error"
+    assert response.headers["cache-control"] == "no-store"
+    assert "set-cookie" not in response.headers
+    assert client.get("/api/v1/health").status_code == 200

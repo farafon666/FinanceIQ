@@ -17,6 +17,7 @@ from financeiq.db.errors import finish_cleanup
 from financeiq.db.session import create_engine
 
 SECRET_DIRECTORY = Path("/run/secrets")
+AUTH_SECRET_KEY = "FINANCEIQ_AUTH_RATE_LIMIT_SECRET"
 
 
 def database_environment(role: Literal["runtime", "migrator"]) -> dict[str, str]:
@@ -35,7 +36,12 @@ def database_environment(role: Literal["runtime", "migrator"]) -> dict[str, str]
     environment = {
         name: value
         for name, value in os.environ.items()
-        if name not in ("FINANCEIQ_DATABASE_URL", "FINANCEIQ_MIGRATION_DATABASE_URL")
+        if name
+        not in (
+            "FINANCEIQ_DATABASE_URL",
+            "FINANCEIQ_MIGRATION_DATABASE_URL",
+            AUTH_SECRET_KEY,
+        )
     }
     key = (
         "FINANCEIQ_DATABASE_URL"
@@ -78,6 +84,10 @@ def main(arguments: Sequence[str] | None = None) -> int:
             asyncio.run(check_database(settings))
         elif arguments == ["serve"]:
             environment = database_environment("runtime")
+            secret = SECRET_DIRECTORY / "auth_rate_limit_secret"
+            environment[AUTH_SECRET_KEY] = secret.read_text(encoding="utf-8").rstrip(
+                "\r\n"
+            )
             os.execve(
                 sys.executable,
                 [
@@ -87,6 +97,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
                     "financeiq.main:create_app",
                     "--factory",
                     "--no-access-log",
+                    "--no-proxy-headers",
                     "--host",
                     "0.0.0.0",
                     "--port",

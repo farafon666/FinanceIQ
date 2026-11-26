@@ -13,12 +13,14 @@ from starlette.exceptions import HTTPException
 _logger = logging.getLogger(__name__)
 _ERRORS = {
     400: ("invalid_json", "Проверьте формат JSON."),
+    401: ("invalid_credentials", "Неверный email или пароль."),
     403: ("forbidden", "Доступ запрещён."),
     404: ("not_found", "Ресурс не найден."),
     405: ("method_not_allowed", "Метод не поддерживается."),
     409: ("conflict", "Запрос конфликтует с текущим состоянием."),
     415: ("unsupported_media_type", "Тип содержимого не поддерживается."),
     422: ("validation_error", "Проверьте параметры запроса."),
+    429: ("rate_limited", "Слишком много запросов. Повторите позже."),
     500: ("internal_error", "Не удалось обработать запрос."),
 }
 

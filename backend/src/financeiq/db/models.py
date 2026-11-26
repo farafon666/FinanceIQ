@@ -7,7 +7,7 @@ from financeiq.modules.accounts.models import (
     BalanceConfirmation,
     HistoryConfirmation,
 )
-from financeiq.modules.auth.models import AuthSession, User
+from financeiq.modules.auth.models import AuthRateLimit, AuthSession, User
 from financeiq.modules.categories.models import CategorizationRule, Category
 from financeiq.modules.imports.models import (
     ImportAccountMapping,
@@ -21,6 +21,7 @@ from financeiq.modules.transactions.models import Transaction, TransferLink
 
 __all__ = [
     "Account",
+    "AuthRateLimit",
     "AuthSession",
     "BalanceConfirmation",
     "CategorizationRule",

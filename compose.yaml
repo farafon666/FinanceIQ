@@ -45,6 +45,7 @@ services:
     environment:
       FINANCEIQ_APP_ENV: development
       FINANCEIQ_LOG_LEVEL: INFO
+      FINANCEIQ_AUTH_TRUSTED_PROXIES: ${FINANCEIQ_AUTH_TRUSTED_PROXIES:-[]}
     ports:
       - "127.0.0.1:${FINANCEIQ_BACKEND_PORT:-8000}:8000"
     depends_on:
@@ -54,6 +55,7 @@ services:
         condition: service_completed_successfully
     secrets:
       - runtime_password
+      - auth_rate_limit_secret
     healthcheck:
       test: ["CMD", "python", "-m", "financeiq.core.container", "ready"]
       interval: 5s
@@ -71,3 +73,5 @@ secrets:
     file: ${FINANCEIQ_SECRETS_DIR:-./.secrets/compose}/migrator_password
   runtime_password:
     file: ${FINANCEIQ_SECRETS_DIR:-./.secrets/compose}/runtime_password
+  auth_rate_limit_secret:
+    file: ${FINANCEIQ_SECRETS_DIR:-./.secrets/compose}/auth_rate_limit_secret

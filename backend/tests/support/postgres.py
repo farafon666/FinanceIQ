@@ -20,6 +20,28 @@ POSTGRES_IMAGE = (
 )
 Role = Literal["postgres", "financeiq_migrator", "financeiq_runtime"]
 
+REVISION_0006_TABLES = frozenset(
+    {
+        "accounts",
+        "auth_sessions",
+        "balance_confirmations",
+        "categories",
+        "categorization_rules",
+        "financial_action_transactions",
+        "financial_actions",
+        "history_confirmations",
+        "import_account_mappings",
+        "import_attempts",
+        "import_batches",
+        "import_cancellations",
+        "import_movements",
+        "import_rows",
+        "transactions",
+        "transfer_links",
+        "users",
+    }
+)
+
 
 @dataclass
 class TestPostgres:

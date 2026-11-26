@@ -11,7 +11,6 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from financeiq.core.config import MigrationSettings, Settings
-from financeiq.db.models import metadata
 from financeiq.db.session import create_engine, create_migration_engine
 from tests.support.financial import (
     Book,
@@ -26,7 +25,7 @@ from tests.support.financial import (
 from tests.support.financial import (
     snapshot as transaction_snapshot,
 )
-from tests.support.postgres import TestPostgres
+from tests.support.postgres import REVISION_0006_TABLES, TestPostgres
 
 pytestmark = pytest.mark.postgres
 
@@ -44,9 +43,10 @@ def constraint_database(constraint_postgres: TestPostgres) -> Iterator[TestPostg
     try:
         yield database
     finally:
-        # Fixed metadata names, only in this fixture's own disposable database.
+        # These tables are present even when the test leaves a historical revision.
         database.psql(
-            "TRUNCATE " + ",".join("public." + name for name in metadata.tables)
+            "TRUNCATE "
+            + ",".join("public." + name for name in sorted(REVISION_0006_TABLES))
         )
         assert database.alembic("upgrade", "head").returncode == 0
 
@@ -96,7 +96,7 @@ def query(database: TestPostgres, sql: str) -> list[asyncpg.Record]:
 def snapshot(database: TestPostgres) -> dict[str, list[asyncpg.Record]]:
     return {
         name: query(database, f"SELECT to_jsonb(t) FROM public.{name} t ORDER BY id")
-        for name in metadata.tables
+        for name in sorted(REVISION_0006_TABLES)
     }
 
 
@@ -351,7 +351,7 @@ def test_owner_lock_revision_preserves_history_and_trigger_contract(
             )[0][0]
         else:
             assert len(guards) == 15
-            assert {guard[0] for guard in guards} == set(metadata.tables) - {
+            assert {guard[0] for guard in guards} == REVISION_0006_TABLES - {
                 "users",
                 "auth_sessions",
             }

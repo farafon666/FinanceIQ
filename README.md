@@ -142,12 +142,12 @@ backend/.venv/bin/python -c "from pathlib import Path; from financeiq.core.confi
 
 ```powershell
 # PowerShell
-.\.venv\Scripts\python.exe -m uvicorn financeiq.main:create_app --factory --host 127.0.0.1 --port 8000 --no-access-log
+.\.venv\Scripts\python.exe -m uvicorn financeiq.main:create_app --factory --host 127.0.0.1 --port 8000 --no-access-log --no-proxy-headers
 ```
 
 ```bash
 # Linux
-.venv/bin/python -m uvicorn financeiq.main:create_app --factory --host 127.0.0.1 --port 8000 --no-access-log
+.venv/bin/python -m uvicorn financeiq.main:create_app --factory --host 127.0.0.1 --port 8000 --no-access-log --no-proxy-headers
 ```
 
 В другом терминале проверьте HTTP-приложение:
@@ -177,21 +177,25 @@ ReDoc, OAuth redirect Swagger и непрефиксированные `/docs`, `
 
 ```powershell
 # PowerShell
-.\.venv\Scripts\python.exe -c "from pathlib import Path; import uvicorn; from financeiq.main import create_app; app = create_app(env_file=Path('../.env')); uvicorn.run(app, host='127.0.0.1', port=8000, access_log=False, log_level=app.state.settings.log_level.lower())"
+.\.venv\Scripts\python.exe -c "from pathlib import Path; import uvicorn; from financeiq.main import create_app; app = create_app(env_file=Path('../.env')); uvicorn.run(app, host='127.0.0.1', port=8000, access_log=False, proxy_headers=False, log_level=app.state.settings.log_level.lower())"
 ```
 
 ```bash
 # Linux
-.venv/bin/python -c "from pathlib import Path; import uvicorn; from financeiq.main import create_app; app = create_app(env_file=Path('../.env')); uvicorn.run(app, host='127.0.0.1', port=8000, access_log=False, log_level=app.state.settings.log_level.lower())"
+.venv/bin/python -c "from pathlib import Path; import uvicorn; from financeiq.main import create_app; app = create_app(env_file=Path('../.env')); uvicorn.run(app, host='127.0.0.1', port=8000, access_log=False, proxy_headers=False, log_level=app.state.settings.log_level.lower())"
 ```
 
 В программном примере уровень логов Uvicorn берется из `Settings.log_level`. При запуске через CLI уровень задается параметром Uvicorn `--log-level` (по умолчанию `info`); `FINANCEIQ_LOG_LEVEL` самостоятельно logging не настраивает. Остановка сервера — Ctrl+C.
 
-### Локальная регистрация (3.3)
+### Локальная регистрация и вход
 
 В `development` и `test` маршрут `POST /api/v1/auth/register` доступен через Swagger UI и принимает `application/json` с полями `email`, `password` и `timezone`. Перед локальной проверкой примените миграции к локальной БД. Укажите ключ IANA, например `Europe/Saratov`. Успешный `201` содержит `id`, канонический `email` и `timezone`. В той же транзакции создаются десять персональных категорий `default_categories_v1`. Повторная регистрация того же канонического email возвращает `409`. Вход выполняется отдельной командой. [D-12](docs/DECISIONS.md#d-12-auth)
 
-В `production` регистрация возвращает `404` до подключения лимитов (3.4) и проверки `Origin` (3.6). В приведённых командах и контейнерном адаптере access-лог Uvicorn отключён, чтобы исходные URL и query string не попадали в логи Auth. Для регистрации в lock-файлы добавлены `argon2-cffi`, `email-validator` и `tzdata`.
+`POST /api/v1/auth/login` принимает `application/json` с полями `email` и `password`. Успешный `204` содержит две `Secure` cookie, сессия действует 12 часов. При исчерпании лимита вход или регистрация возвращает `429` с `Retry-After`. В `production` оба маршрута возвращают `404` до подключения проверки `Origin` в 3.6. [D-12](docs/DECISIONS.md#d-12-auth)
+
+Для отдельного запуска задайте `FINANCEIQ_AUTH_RATE_LIMIT_SECRET` через окружение или явно выбранный `.env`. Используйте 64 hex-символа из криптографического генератора, например `secrets.token_hex(32)`, и сохраняйте один ключ у всех процессов, использующих эту БД, включая перезапуски. Без ключа команды Auth возвращают `500`, а `/api/v1/health` доступен.
+
+`FINANCEIQ_AUTH_TRUSTED_PROXIES` принимает JSON-массив точных IP-адресов. По умолчанию он пуст. Указанный прокси должен перезаписывать `X-Forwarded-For` одним адресом клиента. Команды запуска оставляют обработку этого заголовка приложению и отключают access-лог Uvicorn.
 
 ## Локальное окружение Docker Compose
 
@@ -219,7 +223,7 @@ curl --fail http://127.0.0.1:8000/api/v1/health
 
 `.env.compose` используется только для подстановок Compose: `FINANCEIQ_BACKEND_PORT=8000`, `FINANCEIQ_POSTGRES_PORT=5432`, `FINANCEIQ_SECRETS_DIR=./.secrets/compose`. При занятых портах измените их в этом файле; публикация остается только на `127.0.0.1`. Из контейнеров PostgreSQL доступна как `postgres:5432`, независимо от порта хоста. `.env.compose` не передается загрузчикам приложения или Alembic. Существующие `.env` и `.env.migrations` используются только при отдельном запуске backend/миграций на хосте.
 
-Скрипт создает три разных пароля в `.secrets/compose`: `postgres_password`, `migrator_password`, `runtime_password`. Повторный запуск сохраняет весь существующий комплект; неполный, пустой или недоступный комплект приводит к безопасному отказу. При другом `FINANCEIQ_SECRETS_DIR` укажите тот же каталог через `python infra/compose/setup.py --directory <directory>`. Секреты не выводятся, не попадают в Git или Docker build context. В Linux каталог создается с `0700`, файлы — с `0444`: каталог защищает доступ на хосте, отдельные read-only mounts читаются непривилегированными процессами контейнеров. На Windows доступ на хосте определяется ACL каталога; атрибуты `uid/gid/mode` файловых secrets в Compose не заменяют эти права.
+Скрипт создает три разных пароля в `.secrets/compose`: `postgres_password`, `migrator_password`, `runtime_password`, а также `auth_rate_limit_secret` для backend. Повторно запустите `infra/compose/setup.py` перед первым запуском Compose после обновления до 3.4, чтобы добавить новый файл к существующему комплекту без замены паролей PostgreSQL. Неполный комплект паролей БД, пустой или недоступный файл приводят к безопасному отказу. При другом `FINANCEIQ_SECRETS_DIR` укажите тот же каталог через `python infra/compose/setup.py --directory <directory>`. Секреты не выводятся, не попадают в Git или Docker build context. В Linux каталог создается с `0700`, файлы — с `0444`: каталог защищает доступ на хосте, отдельные read-only mounts читаются непривилегированными процессами контейнеров. На Windows доступ на хосте определяется ACL каталога; атрибуты `uid/gid/mode` файловых secrets в Compose не заменяют эти права.
 
 | Сервис | Назначение и доступ |
 | --- | --- |
@@ -299,7 +303,7 @@ psql -X -h 127.0.0.1 -p 5432 -U postgres -d financeiq
 
 Runtime не имеет доступа к `alembic_version`. Права SELECT/INSERT/UPDATE/DELETE на предметные таблицы выдаются явно по необходимости в миграциях этапа 2, без `ALL` и blanket default grants. Новые функции migrator не получают стандартный `PUBLIC EXECUTE`; нужные разрешения задаются явно. Проверки владельца ресурсов и scoped repositories остаются обязательными.
 
-Текущий head — `0010`. Ревизия проверяет доказательства переводов и возвратов и сверяет сохраненную классификацию с операциями в момент принятия импорта. При обнаружении противоречия в ранее сохраненном доказательстве перевода или возврата upgrade откатывается целиком. Downgrade `0010 → 0009` восстанавливает предыдущие функции проверки с сохранением строк. [DATABASE_SCHEMA.md, §8.6](docs/DATABASE_SCHEMA.md#86-проверка-доказательств-в-0010)
+Текущий head `0011` добавляет счётчики Auth. Downgrade до `0010` допускается при пустой таблице счётчиков. Ревизия `0010` проверяет доказательства переводов и возвратов и сверяет сохраненную классификацию с операциями в момент принятия импорта. При обнаружении противоречия в ранее сохраненном доказательстве перевода или возврата upgrade откатывается целиком. Downgrade `0010 → 0009` восстанавливает предыдущие функции проверки с сохранением строк. [DATABASE_SCHEMA.md](docs/DATABASE_SCHEMA.md)
 
 Финансовая запись в READ COMMITTED блокирует строку владельца в `users`, включая прямой SQL от runtime. Прикладные функции `db.locks` позволяют взять корень до чтения плана и затем заблокировать нужные строки в согласованном порядке. Upgrade до `0008` повторяет проверки сохраненного состояния под блокировкой таблиц и отклоняет несовместимые данные. Downgrade `0008 → 0007` удаляет добавленные функции и триггеры, сохраняя данные и табличные права.
 
@@ -359,7 +363,7 @@ Offline `--sql` выводит DDL явно в stdout, без подключен
 .venv/bin/python -m mypy
 ```
 
-`pytest` без путей запускает только 163 unit-теста без Docker и PostgreSQL. Существующие `unittest.TestCase` и `IsolatedAsyncioTestCase` сохранены; новые async-сценарии используют pytest-asyncio в strict mode с function-scoped event loop и фикстурами. Импорт тестов использует `importlib`, без изменения `PYTHONPATH`. Неизвестные маркеры и параметры конфигурации отклоняются. Кеш pytest исключен из Git.
+`pytest` без путей запускает только unit-тесты без Docker и PostgreSQL. Существующие `unittest.TestCase` и `IsolatedAsyncioTestCase` сохранены; новые async-сценарии используют pytest-asyncio в strict mode с function-scoped event loop и фикстурами. Импорт тестов использует `importlib`, без изменения `PYTHONPATH`. Неизвестные маркеры и параметры конфигурации отклоняются. Кеш pytest исключен из Git.
 
 Unit-тесты проверяют конфигурацию, HTTP, lifecycle, транзакции, отмены и безопасные ошибки с подменой DB-взаимодействия. Реальная PostgreSQL проверяется отдельным набором ниже. Starlette 1.10.0 выдает `StarletteDeprecationWarning` об HTTPX; предупреждение не подавляется.
 
@@ -391,7 +395,7 @@ Ruff проверяет правила `E4`, `E7`, `E9`, `F`, `I`, `UP`, `B`, в
 
 Auth проверяется на таблицах из настоящих миграций: ORM roundtrip/defaults, canonical email, CHECK/UNIQUE/FK, column-level grants, исторические сроки и отзыв сессии, конкурентный конфликт email. Перед/после каждого теста migrator очищает только Auth-таблицы одноразовой тестовой БД; commit настоящие. Accounts проверяется на настоящих миграциях: точные Decimal и крайние суммы, CHECK/UNIQUE/FK, права, guards исходных полей/отзыва, rollback, пересечения и конкурентная уникальность подтверждений. Очистка migrator удаляет дочерние записи до счетов и пользователей только в одноразовой тестовой БД. Categories проверяется на настоящих миграциях: ORM/defaults, CHECK/FK/UNIQUE, права, неизменяемое направление, архив/конфликт имени, generated-поле, обмен приоритетов и rollback при конфликте на commit, две независимые транзакции с наблюдением блокировки. Дочерние строки удаляются migrator только в собственной одноразовой БД. Отдельные unit-тесты проверяют Unicode и границы нормализации; полного сервиса категоризации пока нет. Миграционные тесты проверяют upgrade с пустой БД/0001/0002/0003, сохранение существующих Auth/Accounts, повторяемость, безопасный downgrade, отказ при наличии финансовой истории, аудита или Categories-данных, атомарный DDL и `alembic check`.
 
-Отдельный контейнер для полного цикла миграций проверяет пустую схему после bootstrap, первый и повторный `upgrade head`, `downgrade base` и восстановление через `0001`. На `0010` сверяются 17 предметных таблиц и выполняется `alembic check`. Тесты промежуточных ревизий проверяют сохранение совместимых данных, атомарность запрещенных откатов и ACL. Runtime-набор проверяет настоящее сохранение и rollback, независимые соединения, отсутствие неявного commit, отложенный FK на commit, восстановление сессии, закрытого соединения в пуле и активного разорванного соединения, а также безопасный HTTP 500 и последующий успешный запрос.
+Отдельный контейнер для полного цикла миграций проверяет пустую схему после bootstrap, первый и повторный `upgrade head`, `downgrade base` и восстановление через `0001`. На `0011` сверяются 17 предметных таблиц и техническая таблица счётчиков Auth, выполняется `alembic check`. Тесты промежуточных ревизий проверяют сохранение совместимых данных, атомарность запрещенных откатов и ACL. Runtime-набор проверяет настоящее сохранение и rollback, независимые соединения, отсутствие неявного commit, отложенный FK на commit, восстановление сессии, закрытого соединения в пуле и активного разорванного соединения, а также безопасный HTTP 500 и последующий успешный запрос.
 
 `tests/support/probes.py` содержит отдельную ORM metadata и фабрики `build_parent` / `build_entry`. Фабрики создают объекты в памяти с UUID, Decimal и синтетическим текстом, без записи или commit. Перед каждым runtime-тестом migrator создает технические таблицы и явно выдает runtime только DML-права; после теста таблицы удаляются. Engines и сессии принадлежат event loop своего теста. Внешней откатываемой транзакции вокруг теста нет: commit и отложенные ограничения настоящие.
 
@@ -435,7 +439,7 @@ Auth проверяется на таблицах из настоящих миг
 .venv/bin/python -m pip wheel --no-deps --no-build-isolation --wheel-dir dist .
 ```
 
-`pytest tests` собирает 800 тестов, включая 163 unit, 636 PostgreSQL и 1 Compose. Для проверки состава без запуска используйте `python -m pytest tests --collect-only`. Для запуска одного файла передайте его путь вместо каталога.
+`pytest tests` собирает unit-тесты и интеграционные тесты PostgreSQL и Compose. Для проверки состава без запуска используйте `python -m pytest tests --collect-only`. Для запуска одного файла передайте его путь вместо каталога.
 
 ### GitHub Actions
 

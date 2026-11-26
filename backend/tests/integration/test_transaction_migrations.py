@@ -1,14 +1,13 @@
 """Safe Transactions migration transitions on an owned disposable database."""
 
 import asyncio
-from collections.abc import Iterator
+from collections.abc import Iterator, Set
 
 import asyncpg
 import pytest
 from sqlalchemy import text
 
 from financeiq.core.config import MigrationSettings
-from financeiq.db.models import metadata
 from financeiq.db.session import create_migration_engine
 from tests.integration.test_imports import accept, seed
 from tests.integration.test_transactions import (
@@ -16,7 +15,7 @@ from tests.integration.test_transactions import (
     add_category,
     create_fact,
 )
-from tests.support.postgres import TestPostgres
+from tests.support.postgres import REVISION_0006_TABLES, TestPostgres
 
 pytestmark = pytest.mark.postgres
 NEW_TABLES = {"transactions", "transfer_links", "financial_action_transactions"}
@@ -66,7 +65,7 @@ def query(database: TestPostgres, sql: str) -> list[asyncpg.Record]:
 
 
 def snapshot(
-    database: TestPostgres, tables: set[str]
+    database: TestPostgres, tables: Set[str]
 ) -> dict[str, list[asyncpg.Record]]:
     return {
         name: query(
@@ -133,7 +132,7 @@ def test_upgrade_and_empty_downgrade_preserve_previous_history(
     database = migration_database
     assert database.alembic("downgrade", "0005").returncode == 0
     asyncio.run(seed_history(database, accepted=accepted))
-    previous_tables = set(metadata.tables) - NEW_TABLES
+    previous_tables = REVISION_0006_TABLES - NEW_TABLES
     before = snapshot(database, previous_tables)
     for _ in range(2):
         result = database.alembic("upgrade", "0006")
@@ -161,7 +160,7 @@ def test_incompatible_legacy_link_upgrade_is_atomic(
     assert database.alembic("downgrade", "0005").returncode == 0
     asyncio.run(seed_history(database))
     database.psql("UPDATE import_movements SET decision='link';")
-    previous_tables = set(metadata.tables) - NEW_TABLES
+    previous_tables = REVISION_0006_TABLES - NEW_TABLES
     before = snapshot(database, previous_tables)
     result = database.alembic("--raiseerr", "upgrade", "0006")
     assert result.returncode != 0
@@ -181,13 +180,13 @@ def test_downgrade_preserves_live_and_cancelled_financial_history(
 ) -> None:
     database = migration_database
     asyncio.run(seed_history(database, fact=True, cancelled=cancelled))
-    before = snapshot(database, set(metadata.tables))
+    before = snapshot(database, REVISION_0006_TABLES)
     results = query(database, "SELECT result_transaction_id FROM import_movements")
     result = database.alembic("--raiseerr", "downgrade", "0005")
     assert result.returncode != 0
     assert "Migration operation failed." in result.stderr
     assert query(database, "SELECT version_num FROM alembic_version")[0][0] == "0006"
-    assert snapshot(database, set(metadata.tables)) == before
+    assert snapshot(database, REVISION_0006_TABLES) == before
     assert (
         query(database, "SELECT result_transaction_id FROM import_movements") == results
     )

@@ -14,7 +14,6 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from financeiq.core.config import MigrationSettings, Settings
-from financeiq.db.models import metadata
 from financeiq.db.session import (
     create_engine,
     create_migration_engine,
@@ -28,7 +27,7 @@ from financeiq.modules.imports.models import (
     ImportMovement,
     ImportRow,
 )
-from tests.support.postgres import TestPostgres
+from tests.support.postgres import REVISION_0006_TABLES, TestPostgres
 
 pytestmark = [pytest.mark.postgres, pytest.mark.asyncio]
 
@@ -58,7 +57,9 @@ async def imports_engine(
         # Only the disposable TestPostgres instance. Runtime cannot TRUNCATE;
         # accepted history deliberately cannot be removed through normal DML.
         async with imports_migrator.begin() as connection:
-            await connection.execute(text("TRUNCATE " + ", ".join(metadata.tables)))
+            await connection.execute(
+                text("TRUNCATE " + ", ".join(sorted(REVISION_0006_TABLES)))
+            )
 
     engine = create_engine(
         Settings(

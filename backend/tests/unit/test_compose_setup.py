@@ -10,6 +10,7 @@ from pathlib import Path
 
 SETUP = Path(__file__).resolve().parents[3] / "infra" / "compose" / "setup.py"
 FILES = ("postgres_password", "migrator_password", "runtime_password")
+AUTH_FILE = "auth_rate_limit_secret"
 
 
 class ComposeSetupTests(unittest.TestCase):
@@ -35,22 +36,34 @@ class ComposeSetupTests(unittest.TestCase):
             directory = Path(temporary) / "secrets"
             first = self.prepare(directory)
             self.assertEqual(first.returncode, 0, first.stderr)
-            original = {name: (directory / name).read_bytes() for name in FILES}
-            self.assertEqual(len(set(original.values())), 3)
+            all_files = (*FILES, AUTH_FILE)
+            original = {name: (directory / name).read_bytes() for name in all_files}
+            self.assertEqual(len(set(original.values())), 4)
             for password in original.values():
                 self.assertEqual(len(password), 64)
                 self.assertNotIn(password.decode(), first.stdout + first.stderr)
             second = self.prepare(directory)
             self.assertEqual(second.returncode, 0, second.stderr)
             self.assertEqual(
-                original, {name: (directory / name).read_bytes() for name in FILES}
+                original, {name: (directory / name).read_bytes() for name in all_files}
             )
             if os.name != "nt":
                 self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o700)
-                for name in FILES:
+                for name in all_files:
                     self.assertEqual(
                         stat.S_IMODE((directory / name).stat().st_mode), 0o444
                     )
+
+    def test_upgrades_legacy_complete_set_without_changing_passwords(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            for name in FILES:
+                (directory / name).write_text(name, encoding="utf-8")
+            result = self.prepare(directory)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(len((directory / AUTH_FILE).read_text()), 64)
+            for name in FILES:
+                self.assertEqual((directory / name).read_text(encoding="utf-8"), name)
 
     def test_partial_or_empty_set_fails_without_modification(self) -> None:
         for value in ("secret-sentinel", ""):

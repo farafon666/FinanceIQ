@@ -60,5 +60,5 @@ def create_app(*, env_file: Path | None = None) -> FastAPI:
     app.add_exception_handler(HTTPException, http_error_handler)
     app.add_exception_handler(RequestValidationError, request_validation_error_handler)
     app.add_middleware(AuthResponseMiddleware, prefix=API_PREFIX + AUTH_PREFIX)
-    app.include_router(create_router(registration_enabled=is_nonproduction))
+    app.include_router(create_router(auth_enabled=is_nonproduction))
     return app

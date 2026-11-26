@@ -18,7 +18,12 @@ import pytest
 ROOT = Path(__file__).resolve().parents[3]
 pytestmark = pytest.mark.compose
 
-SECRET_NAMES = ("postgres_password", "migrator_password", "runtime_password")
+SECRET_NAMES = (
+    "postgres_password",
+    "migrator_password",
+    "runtime_password",
+    "auth_rate_limit_secret",
+)
 
 
 class ComposeIntegrationTests(unittest.TestCase):
@@ -180,24 +185,39 @@ class ComposeIntegrationTests(unittest.TestCase):
             response = client.get(self.health_url(), timeout=5)
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json(), {"status": "ok"})
+            auth_url = self.health_url().removesuffix("/health") + "/auth"
+            credentials = {
+                "email": "compose@example.org",
+                "password": "synthetic compose password",
+            }
+            registration = client.post(
+                auth_url + "/register", json=credentials | {"timezone": "UTC"}
+            )
+            self.assertEqual(registration.status_code, 201)
+            login = client.post(auth_url + "/login", json=credentials)
+            self.assertEqual(login.status_code, 204)
+            self.assertEqual(len(login.headers.get_list("set-cookie")), 2)
         current = self.compose(
             "run", "--rm", "--no-deps", "migrate", "migrate", "current"
         )
-        self.assertIn("0010 (head)", current.stdout)
+        self.assertIn("0011 (head)", current.stdout)
         self.compose("run", "--rm", "--no-deps", "migrate", "migrate", "check")
 
-        for service, target in (
-            ("backend", "runtime_password"),
-            ("migrate", "migrator_password"),
+        for service, targets in (
+            ("backend", ("runtime_password", "auth_rate_limit_secret")),
+            ("migrate", ("migrator_password",)),
         ):
             state = self.required_state(service)
             self.assertEqual(state["Config"]["User"], "10001:10001")
             self.assertEqual(
                 {mount["Destination"] for mount in state["Mounts"]},
-                {f"/run/secrets/{target}"},
+                {f"/run/secrets/{target}" for target in targets},
             )
             self.assertFalse(
-                any("DATABASE_URL=" in entry for entry in state["Config"]["Env"])
+                any(
+                    "DATABASE_URL=" in entry or "AUTH_RATE_LIMIT_SECRET=" in entry
+                    for entry in state["Config"]["Env"]
+                )
             )
         self.compose(
             "exec",
@@ -207,6 +227,7 @@ class ComposeIntegrationTests(unittest.TestCase):
             "-c",
             "from pathlib import Path; import os; assert os.getuid() == 10001; "
             "assert Path('/run/secrets/runtime_password').read_text(); "
+            "assert len(Path('/run/secrets/auth_rate_limit_secret').read_text()) == 64; "
             "assert not Path('/run/secrets/migrator_password').exists(); "
             "assert not Path('/run/secrets/postgres_password').exists()",
         )
@@ -218,6 +239,8 @@ class ComposeIntegrationTests(unittest.TestCase):
             "up", "--force-recreate", "--wait", "--wait-timeout", "180", timeout=240
         )
         self.assertEqual(self.sql("SELECT value FROM public.compose_probe"), "17")
+        self.assertEqual(self.sql("SELECT count(*) FROM auth_sessions"), "1")
+        self.assertEqual(self.sql("SELECT count(*) FROM auth_rate_limits"), "3")
         self.compose("down")
         self.up()
         self.assertEqual(self.sql("SELECT value FROM public.compose_probe"), "17")
@@ -275,6 +298,7 @@ class ComposeIntegrationTests(unittest.TestCase):
             "-c",
             "from pathlib import Path; "
             "assert not Path('/run/secrets/runtime_password').exists(); "
+            "assert not Path('/run/secrets/auth_rate_limit_secret').exists(); "
             "assert not Path('/app/.env').exists(); assert not Path('/app/.secrets').exists()",
         )
 

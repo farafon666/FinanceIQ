@@ -22,6 +22,10 @@ class ContainerCommandTests(unittest.TestCase):
         self.password = "secret-sentinel@:%/?#"
         for name in ("runtime_password", "migrator_password"):
             (self.directory / name).write_text(self.password, encoding="utf-8")
+        self.auth_secret = "ab" * 32
+        (self.directory / "auth_rate_limit_secret").write_text(
+            self.auth_secret + "\n", encoding="utf-8"
+        )
         self.secret_patch = patch.object(container, "SECRET_DIRECTORY", self.directory)
         self.secret_patch.start()
         self.addCleanup(self.secret_patch.stop)
@@ -36,6 +40,7 @@ class ContainerCommandTests(unittest.TestCase):
         self.assertIn("uvicorn", arguments)
         self.assertIn("--factory", arguments)
         self.assertIn("--no-access-log", arguments)
+        self.assertIn("--no-proxy-headers", arguments)
         self.assertNotIn("--reload", arguments)
         url = make_url(environment["FINANCEIQ_DATABASE_URL"])
         self.assertEqual(url.username, "financeiq_runtime")
@@ -45,10 +50,18 @@ class ContainerCommandTests(unittest.TestCase):
         )
         self.assertNotIn("FINANCEIQ_MIGRATION_DATABASE_URL", environment)
         self.assertNotIn(self.password, " ".join(arguments))
+        self.assertEqual(environment[container.AUTH_SECRET_KEY], self.auth_secret)
+        self.assertNotIn(self.auth_secret, " ".join(arguments))
 
     def test_migrate_uses_only_migrator_and_preserves_alembic_arguments(self) -> None:
         with (
-            patch.dict(os.environ, FINANCEIQ_DATABASE_URL="foreign-secret"),
+            patch.dict(
+                os.environ,
+                {
+                    "FINANCEIQ_DATABASE_URL": "foreign-secret",
+                    container.AUTH_SECRET_KEY: self.auth_secret,
+                },
+            ),
             patch("financeiq.core.container.os.execve") as execute,
         ):
             self.assertEqual(container.main(["migrate", "current"]), 0)
@@ -58,6 +71,7 @@ class ContainerCommandTests(unittest.TestCase):
         self.assertEqual(url.username, "financeiq_migrator")
         self.assertEqual(url.password, self.password)
         self.assertNotIn("FINANCEIQ_DATABASE_URL", environment)
+        self.assertNotIn(container.AUTH_SECRET_KEY, environment)
 
     def test_missing_empty_invalid_or_unreadable_secret_fails_safely(self) -> None:
         secret = self.directory / "runtime_password"
