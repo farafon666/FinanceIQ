@@ -33,6 +33,8 @@ SECRET = bytes.fromhex("a3" * 32)
 EMAIL = "test.name+work@example.org"
 LOGIN = "/api/v1/auth/login"
 REGISTER = "/api/v1/auth/register"
+ME = "/api/v1/auth/me"
+LOGOUT = "/api/v1/auth/logout"
 SESSION_COOKIE = "__Host-financeiq-session"
 CSRF_COOKIE = "__Host-financeiq-csrf"
 
@@ -48,6 +50,8 @@ def auth_environment(
     )
     monkeypatch.setenv("FINANCEIQ_AUTH_RATE_LIMIT_SECRET", SECRET.hex())
     monkeypatch.delenv("FINANCEIQ_AUTH_TRUSTED_PROXIES", raising=False)
+    # Exercise sessions and counters before physical removal, covered separately.
+    monkeypatch.setattr("financeiq.main.run_auth_cleanup", AsyncMock())
 
 
 @asynccontextmanager
@@ -412,3 +416,206 @@ async def test_commit_failure_rolls_back_session_and_rehash_but_keeps_admission(
             1,
             1,
         ]
+
+
+async def register_and_login(
+    client: httpx.AsyncClient, email: str = EMAIL
+) -> dict[str, str]:
+    credentials = {"email": email, "password": "Synthetic password for session tests"}
+    registered = await client.post(REGISTER, json=credentials | {"timezone": "UTC"})
+    assert registered.status_code == 201
+    session_secrets(await client.post(LOGIN, json=credentials))
+    profile: dict[str, str] = registered.json()
+    return profile
+
+
+def assert_authentication_required(response: httpx.Response) -> None:
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "authentication_required"
+    assert response.headers["cache-control"] == "no-store"
+    assert "set-cookie" not in response.headers
+
+
+async def test_session_profile_and_concurrent_logout_preserve_other_session(
+    financial_engine: AsyncEngine,
+) -> None:
+    async with auth_client() as first, auth_client() as second:
+        expected_profile = await register_and_login(first)
+        first_token = first.cookies[SESSION_COOKIE]
+        session_secrets(
+            await second.post(
+                LOGIN,
+                json={
+                    "email": EMAIL,
+                    "password": "Synthetic password for session tests",
+                },
+            )
+        )
+        assert second.cookies[SESSION_COOKIE] != first_token
+        async with financial_engine.connect() as observer:
+            times = select(AuthSession.id, AuthSession.expires_at).order_by(
+                AuthSession.id
+            )
+            before = (await observer.execute(times)).all()
+            profile = await first.get(ME, params={"id": "untrusted-user-id"})
+            assert profile.status_code == 200
+            assert profile.json() == expected_profile
+            assert profile.headers["cache-control"] == "no-store"
+            assert "set-cookie" not in profile.headers
+            assert (await observer.execute(times)).all() == before
+
+        headers = {"Cookie": f"{SESSION_COOKIE}={first_token}"}
+        first_result, second_result = await asyncio.gather(
+            first.post(LOGOUT, headers=headers),
+            first.post(LOGOUT, headers=headers),
+        )
+        success, refused = sorted(
+            (first_result, second_result), key=lambda response: response.status_code
+        )
+        assert success.status_code == 204 and success.content == b""
+        assert success.headers["cache-control"] == "no-store"
+        cookie_headers = success.headers.get_list("set-cookie")
+        assert len(cookie_headers) == 2
+        cleared = SimpleCookie()
+        for header in cookie_headers:
+            cleared.load(header)
+        assert set(cleared) == {SESSION_COOKIE, CSRF_COOKIE}
+        for name, cookie in cleared.items():
+            assert cookie.value == ""
+            assert cookie["max-age"] == "0"
+            assert cookie["secure"] and not cookie["domain"]
+            assert cookie["path"] == "/" and cookie["samesite"].lower() == "strict"
+            assert bool(cookie["httponly"]) == (name == SESSION_COOKIE)
+            assert name not in first.cookies
+        assert_authentication_required(refused)
+        assert_authentication_required(await first.get(ME, headers=headers))
+        assert (await second.get(ME)).json() == expected_profile
+
+    async with financial_engine.connect() as observer:
+        count = await observer.scalar(
+            text("SELECT count(*) FROM auth_sessions WHERE revoked_at IS NOT NULL")
+        )
+        assert count == 1
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        "UPDATE auth_sessions SET expires_at = clock_timestamp()",
+        "UPDATE auth_sessions SET revoked_at = clock_timestamp()",
+        "UPDATE users SET is_active = false",
+    ],
+    ids=["expired", "revoked", "inactive"],
+)
+async def test_stored_invalid_session_fails_before_cleanup(
+    financial_engine: AsyncEngine, state: str
+) -> None:
+    async with auth_client() as client:
+        await register_and_login(client)
+        async with financial_engine.begin() as connection:
+            await connection.execute(text(state))
+        assert_authentication_required(await client.get(ME))
+        assert_authentication_required(await client.post(LOGOUT))
+    async with financial_engine.connect() as connection:
+        assert await connection.scalar(select(AuthSession.id)) is not None
+
+
+async def test_unknown_session_is_unauthenticated() -> None:
+    async with auth_client() as client:
+        assert_authentication_required(
+            await client.get(ME, headers={"Cookie": f"{SESSION_COOKIE}={'A' * 43}"})
+        )
+
+
+async def test_profile_is_scoped_to_the_session_owner(
+    financial_engine: AsyncEngine,
+) -> None:
+    async with auth_client() as first, auth_client() as second:
+        first_profile = await register_and_login(first)
+        second_profile = await register_and_login(second, "other@example.org")
+        assert (await second.get(ME, params={"id": first_profile["id"]})).json() == (
+            second_profile
+        )
+
+
+async def test_logout_checks_expiry_after_waiting_for_session_lock(
+    financial_engine: AsyncEngine,
+) -> None:
+    async with auth_client() as client, financial_engine.connect() as holder:
+        await register_and_login(client)
+        async with holder.begin():
+            await holder.execute(
+                text(
+                    "UPDATE auth_sessions SET expires_at = clock_timestamp() + interval '3 seconds'"
+                )
+            )
+        task = None
+        try:
+            async with holder.begin(), asyncio.timeout(5):
+                holder_pid = await holder.scalar(text("SELECT pg_backend_pid()"))
+                await holder.execute(text("SELECT id FROM auth_sessions FOR UPDATE"))
+                task = asyncio.create_task(client.post(LOGOUT))
+                while not await holder.scalar(
+                    text("""
+                    SELECT EXISTS (
+                        SELECT FROM pg_stat_activity
+                        WHERE :holder = ANY(pg_blocking_pids(pid))
+                    )
+                    """),
+                    {"holder": holder_pid},
+                ):
+                    assert not task.done()
+                    await asyncio.sleep(0.01)
+                await holder.execute(
+                    text("SELECT pg_sleep_until(expires_at) FROM auth_sessions")
+                )
+            assert_authentication_required(await asyncio.wait_for(task, timeout=5))
+        finally:
+            if task is not None and not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        assert await holder.scalar(select(AuthSession.revoked_at)) is None
+
+
+async def test_logout_commit_failure_preserves_session_and_browser_cookies(
+    financial_engine: AsyncEngine,
+    financial_migrator: AsyncEngine,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async with auth_client() as client:
+        profile = await register_and_login(client)
+        token = client.cookies[SESSION_COOKIE]
+        async with financial_migrator.begin() as connection:
+            await connection.execute(
+                text("""
+                CREATE FUNCTION auth_test_logout_failure() RETURNS trigger LANGUAGE plpgsql
+                AS $$ BEGIN RAISE EXCEPTION 'private-logout-failure'; END $$
+                """)
+            )
+            await connection.execute(
+                text("""
+                CREATE CONSTRAINT TRIGGER auth_test_logout_failure AFTER UPDATE ON auth_sessions
+                DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION auth_test_logout_failure()
+                """)
+            )
+        try:
+            response = await client.post(LOGOUT)
+            assert response.status_code == 500
+            assert response.json()["error"]["code"] == "internal_error"
+            assert response.headers["cache-control"] == "no-store"
+            assert "set-cookie" not in response.headers
+            assert client.cookies[SESSION_COOKIE] == token
+            assert (await client.get(ME)).json() == profile
+            for private in (token, EMAIL, "private-logout-failure"):
+                assert private not in response.text + caplog.text
+        finally:
+            async with financial_migrator.begin() as connection:
+                await connection.execute(
+                    text("DROP TRIGGER auth_test_logout_failure ON auth_sessions")
+                )
+                await connection.execute(
+                    text("DROP FUNCTION auth_test_logout_failure()")
+                )
+    async with financial_engine.connect() as connection:
+        row = (await connection.execute(select(AuthSession.revoked_at))).one()
+        assert row.revoked_at is None

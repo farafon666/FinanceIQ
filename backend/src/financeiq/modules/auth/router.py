@@ -12,8 +12,14 @@ from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from financeiq.api.dependencies import DatabaseSession
-from financeiq.api.errors import ErrorResponse, ValidationErrorResponse, error_response
+from financeiq.api.errors import (
+    AuthenticationRequired,
+    ErrorResponse,
+    ValidationErrorResponse,
+    error_response,
+)
 from financeiq.core.config import Settings
+from financeiq.modules.auth.dependencies import SESSION_COOKIE, CurrentSession
 from financeiq.modules.auth.rate_limits import reserve_attempt
 from financeiq.modules.auth.schemas import (
     LoginRequest,
@@ -25,6 +31,7 @@ from financeiq.modules.auth.service import (
     EmailAlreadyRegistered,
     InvalidCredentials,
     login_user,
+    logout_user,
     register_user,
 )
 
@@ -79,7 +86,9 @@ class AuthResponseMiddleware:
             await error_response(500)(scope, receive, send_auth)
 
 
-router = APIRouter(prefix=AUTH_PREFIX, tags=["auth"], route_class=JsonRoute)
+router = APIRouter(prefix=AUTH_PREFIX, tags=["auth"])
+_json_router = APIRouter(route_class=JsonRoute)
+_internal_error = {"model": ErrorResponse, "description": "Internal error"}
 _auth_errors: dict[int | str, dict[str, Any]] = {
     400: {"model": ErrorResponse, "description": "Invalid JSON"},
     415: {"model": ErrorResponse, "description": "Unsupported media type"},
@@ -89,7 +98,17 @@ _auth_errors: dict[int | str, dict[str, Any]] = {
         "description": "Auth rate limit reached",
         "headers": {"Retry-After": {"schema": {"type": "integer", "minimum": 0}}},
     },
-    500: {"model": ErrorResponse, "description": "Internal error"},
+    500: _internal_error,
+}
+_session_errors: dict[int | str, dict[str, Any]] = {
+    401: {"model": ErrorResponse, "description": "Authentication required"},
+    500: _internal_error,
+}
+_cookie_headers = {
+    "Set-Cookie": {
+        "description": "Separate __Host-financeiq-session and __Host-financeiq-csrf cookies",
+        "schema": {"type": "string"},
+    }
 }
 
 
@@ -133,7 +152,7 @@ async def _admit(
         raise HTTPException(status_code=429, headers={"Retry-After": str(delay)})
 
 
-@router.post(
+@_json_router.post(
     "/register",
     status_code=201,
     responses=_auth_errors
@@ -155,21 +174,13 @@ async def register(
     return UserProfile(id=user_id, email=payload.email, timezone=payload.timezone)
 
 
-@router.post(
+@_json_router.post(
     "/login",
     status_code=204,
     response_class=Response,
     responses=_auth_errors
     | {
-        204: {
-            "description": "Session created",
-            "headers": {
-                "Set-Cookie": {
-                    "description": "Separate __Host-financeiq-session and __Host-financeiq-csrf cookies",
-                    "schema": {"type": "string"},
-                }
-            },
-        },
+        204: {"description": "Session created", "headers": _cookie_headers},
         401: {"model": ErrorResponse, "description": "Invalid credentials"},
     },
 )
@@ -184,18 +195,47 @@ async def login(
     except InvalidCredentials:
         raise HTTPException(status_code=401) from None
 
+    return _cookie_response(
+        issued.token, issued.csrf_token, max_age=int(SESSION_TTL.total_seconds())
+    )
+
+
+def _cookie_response(token: str, csrf_token: str, *, max_age: int) -> Response:
     response = Response(status_code=204)
     for name, value, httponly in (
-        ("__Host-financeiq-session", issued.token, True),
-        ("__Host-financeiq-csrf", issued.csrf_token, False),
+        (SESSION_COOKIE, token, True),
+        ("__Host-financeiq-csrf", csrf_token, False),
     ):
         response.set_cookie(
             name,
             value,
             path="/",
-            max_age=int(SESSION_TTL.total_seconds()),
+            max_age=max_age,
             secure=True,
             httponly=httponly,
             samesite="strict",
         )
     return response
+
+
+@router.get("/me", responses=_session_errors)
+async def me(current: CurrentSession) -> UserProfile:
+    return UserProfile(
+        id=current.user_id, email=current.email, timezone=current.timezone
+    )
+
+
+@router.post(
+    "/logout",
+    status_code=204,
+    response_class=Response,
+    responses=_session_errors
+    | {204: {"description": "Session revoked", "headers": _cookie_headers}},
+)
+async def logout(current: CurrentSession, session: DatabaseSession) -> Response:
+    if not await logout_user(session, current.id):
+        raise AuthenticationRequired()
+    return _cookie_response("", "", max_age=0)
+
+
+router.include_router(_json_router)

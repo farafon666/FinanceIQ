@@ -1,9 +1,19 @@
-"""Persistence for Auth commands using the caller's transaction."""
+"""Auth persistence using the caller's transaction."""
 
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import DateTime, extract, func, literal, select, update
+from sqlalchemy import (
+    ColumnElement,
+    DateTime,
+    and_,
+    extract,
+    func,
+    literal,
+    select,
+    text,
+    update,
+)
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -69,6 +79,56 @@ async def insert_auth_session(
     )
 
 
+def _valid_session() -> ColumnElement[bool]:
+    return and_(
+        User.is_active,
+        AuthSession.revoked_at.is_(None),
+        AuthSession.expires_at > func.clock_timestamp(),
+    )
+
+
+async def find_valid_session(
+    session: AsyncSession, token_hash: bytes
+) -> tuple[UUID, UUID, str, str, bytes] | None:
+    result = await session.execute(
+        select(
+            AuthSession.id,
+            User.id,
+            User.email,
+            User.timezone,
+            AuthSession.csrf_token_hash,
+        )
+        .join(User, User.id == AuthSession.user_id)
+        .where(AuthSession.token_hash == token_hash, _valid_session())
+    )
+    return result.tuples().one_or_none()
+
+
+async def revoke_auth_session(session: AsyncSession, session_id: UUID) -> bool:
+    locked_id = await session.scalar(
+        select(AuthSession.id)
+        .where(AuthSession.id == session_id)
+        .with_for_update(key_share=True)
+    )
+    if locked_id is None:
+        return False
+
+    # A fresh statement checks expiry and account status after any lock wait.
+    revoked_id = await session.scalar(
+        update(AuthSession)
+        .where(
+            AuthSession.id == locked_id,
+            User.id == AuthSession.user_id,
+            _valid_session(),
+        )
+        .values(
+            revoked_at=func.greatest(func.clock_timestamp(), AuthSession.created_at)
+        )
+        .returning(AuthSession.id)
+    )
+    return revoked_id is not None
+
+
 async def current_rate_limit_window(
     session: AsyncSession, width: timedelta
 ) -> datetime:
@@ -110,3 +170,7 @@ async def retry_after_window(session: AsyncSession, window_end: datetime) -> int
     )
     result = await session.execute(select(func.greatest(0, func.ceil(remaining))))
     return int(result.scalar_one())
+
+
+async def cleanup_auth_batch(session: AsyncSession) -> bool:
+    return (await session.scalar(text("SELECT public.cleanup_auth_batch()"))) is True

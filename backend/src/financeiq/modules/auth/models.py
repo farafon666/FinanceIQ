@@ -8,6 +8,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     LargeBinary,
     Text,
@@ -43,6 +44,17 @@ class User(Base):
 class AuthSession(Base):
     __tablename__ = "auth_sessions"
     __table_args__ = (
+        Index(
+            "ix_auth_sessions_expiry",
+            "expires_at",
+            "id",
+            postgresql_where=text("revoked_at IS NULL"),
+        ),
+        Index(
+            "ix_auth_sessions_revoked",
+            "id",
+            postgresql_where=text("revoked_at IS NOT NULL"),
+        ),
         CheckConstraint("octet_length(token_hash) = 32", name="token_hash_length"),
         CheckConstraint(
             "octet_length(csrf_token_hash) = 32", name="csrf_token_hash_length"
@@ -73,6 +85,7 @@ class AuthSession(Base):
 class AuthRateLimit(Base):
     __tablename__ = "auth_rate_limits"
     __table_args__ = (
+        Index("ix_auth_rate_limits_expiry", "window_start", "scope", "key_digest"),
         CheckConstraint(
             "scope IN ('login_ip', 'login_email', 'register_ip')", name="known_scope"
         ),

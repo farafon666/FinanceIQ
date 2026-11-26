@@ -45,7 +45,7 @@ async def test_history_roundtrip_and_domain_schema() -> None:
             async def assert_head() -> None:
                 current = database.alembic("current")
                 assert current.returncode == 0, current.stderr
-                assert current.stdout.strip() == "0011 (head)"
+                assert current.stdout.strip() == "0012 (head)"
                 assert await public_tables() == expected_tables | version_table
                 check = database.alembic("check")
                 assert check.returncode == 0, check.stderr
@@ -155,7 +155,7 @@ class MigrationIntegrationTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("Migration operation failed.", result.stderr)
             self.assertEqual(
-                self.query("SELECT version_num FROM alembic_version")[0][0], "0011"
+                self.query("SELECT version_num FROM alembic_version")[0][0], "0012"
             )
             self.assertEqual(self.query("SELECT count(*) FROM users")[0][0], 1)
             self.assertEqual(
@@ -189,7 +189,7 @@ class MigrationIntegrationTests(unittest.TestCase):
             refused = self.database.alembic("downgrade", "0010")
             self.assertNotEqual(refused.returncode, 0)
             self.assertEqual(
-                self.query("SELECT version_num FROM alembic_version")[0][0], "0011"
+                self.query("SELECT version_num FROM alembic_version")[0][0], "0012"
             )
             self.assertEqual(
                 self.query("SELECT attempt_count FROM auth_rate_limits", runtime)[0][0],
@@ -204,6 +204,74 @@ class MigrationIntegrationTests(unittest.TestCase):
         )
         upgrade = self.database.alembic("upgrade", "head")
         self.assertEqual(upgrade.returncode, 0, upgrade.stderr)
+
+    def test_auth_cleanup_migration_preserves_rows_and_limits_execution(self) -> None:
+        result = self.database.alembic("downgrade", "0011")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.query(
+            """
+            WITH owner AS (
+                INSERT INTO users(id, email, password_hash, timezone)
+                VALUES (gen_random_uuid(), 'cleanup@example.org', 'test-hash', 'UTC')
+                RETURNING id
+            )
+            INSERT INTO auth_sessions(id, user_id, token_hash, csrf_token_hash, expires_at)
+            SELECT gen_random_uuid(), id, decode(repeat('ab', 32), 'hex'),
+                   decode(repeat('cd', 32), 'hex'), now() + interval '1 hour'
+            FROM owner
+            """,
+            execute=True,
+        )
+        self.addCleanup(self.query, "DELETE FROM users", execute=True)
+        self.addCleanup(self.query, "DELETE FROM auth_sessions", execute=True)
+        self.query(
+            """
+            INSERT INTO auth_rate_limits(scope, key_digest, window_start, attempt_count)
+            VALUES ('login_ip', decode(repeat('ef', 32), 'hex'), now(), 3)
+            """,
+            execute=True,
+        )
+        self.addCleanup(self.query, "DELETE FROM auth_rate_limits", execute=True)
+        before = (
+            self.query("SELECT * FROM auth_sessions"),
+            self.query("SELECT * FROM auth_rate_limits"),
+        )
+        result = self.database.alembic("upgrade", "head")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        acl = self.query(
+            """
+            SELECT prosecdef, proconfig,
+                has_function_privilege('financeiq_runtime', oid, 'EXECUTE'),
+                EXISTS (SELECT FROM aclexplode(proacl)
+                        WHERE grantee = 0 AND privilege_type = 'EXECUTE')
+            FROM pg_proc WHERE oid = 'public.cleanup_auth_batch()'::regprocedure
+            """
+        )[0]
+        self.assertEqual(
+            tuple(acl), (True, ["search_path=pg_catalog, pg_temp"], True, False)
+        )
+        self.assertFalse(
+            self.query("SELECT public.cleanup_auth_batch()", "financeiq_runtime")[0][0]
+        )
+        for statement in ("DELETE FROM auth_sessions", "DELETE FROM auth_rate_limits"):
+            with (
+                self.subTest(statement=statement),
+                self.assertRaises(asyncpg.InsufficientPrivilegeError),
+            ):
+                self.query(statement, "financeiq_runtime", execute=True)
+        result = self.database.alembic("downgrade", "0011")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.query("SELECT to_regprocedure('public.cleanup_auth_batch()')")[0][0],
+            None,
+        )
+        self.assertEqual(
+            (
+                self.query("SELECT * FROM auth_sessions"),
+                self.query("SELECT * FROM auth_rate_limits"),
+            ),
+            before,
+        )
 
     def test_bootstrap_is_repeatable_without_resetting_passwords(self) -> None:
         self.assertEqual(self.database.bootstrap().returncode, 0)
@@ -413,7 +481,7 @@ class MigrationIntegrationTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("Migration operation failed.", result.stderr)
             self.assertEqual(
-                self.query("SELECT version_num FROM alembic_version")[0][0], "0011"
+                self.query("SELECT version_num FROM alembic_version")[0][0], "0012"
             )
             self.assertEqual(self.query("SELECT count(*) FROM categories")[0][0], 1)
             self.assertEqual(
@@ -670,5 +738,5 @@ class MigrationIntegrationTests(unittest.TestCase):
             self.assertNotIn("During handling", result.stderr)
         self.assertIsNone(self.query("SELECT to_regclass('rollback_probe')")[0][0])
         self.assertEqual(
-            self.query("SELECT version_num FROM alembic_version")[0][0], "0011"
+            self.query("SELECT version_num FROM alembic_version")[0][0], "0012"
         )

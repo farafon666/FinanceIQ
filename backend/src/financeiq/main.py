@@ -2,7 +2,7 @@
 
 import asyncio
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -18,7 +18,14 @@ from financeiq.api.router import API_PREFIX, create_router
 from financeiq.core.config import load_settings
 from financeiq.db.errors import DATABASE_EXCEPTIONS, DatabaseError, finish_cleanup
 from financeiq.db.session import create_engine, create_session_factory
+from financeiq.modules.auth.cleanup import run_auth_cleanup
 from financeiq.modules.auth.router import AUTH_PREFIX, AuthResponseMiddleware
+
+
+async def _stop_auth_cleanup(task: asyncio.Task[None]) -> None:
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
 
 
 def create_app(*, env_file: Path | None = None) -> FastAPI:
@@ -32,8 +39,13 @@ def create_app(*, env_file: Path | None = None) -> FastAPI:
         application.state.engine = engine
         cancelled = False
         try:
-            application.state.session_factory = create_session_factory(engine)
-            yield
+            factory = create_session_factory(engine)
+            application.state.session_factory = factory
+            cleanup = asyncio.create_task(run_auth_cleanup(factory))
+            try:
+                yield
+            finally:
+                await finish_cleanup(_stop_auth_cleanup(cleanup))
         except asyncio.CancelledError:
             cancelled = True
             raise

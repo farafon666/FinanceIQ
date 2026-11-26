@@ -37,7 +37,7 @@ class DatabaseApplicationTests(unittest.TestCase):
         )
         self.enterContext(patch.dict(os.environ, environment, clear=True))
 
-    def test_import_factory_lifespan_and_health_never_connect(self) -> None:
+    def test_factory_and_health_do_not_connect_for_the_request(self) -> None:
         with patch("asyncpg.connect", new=AsyncMock()) as connect:
             first, second = create_app(), create_app()
             self.assertFalse(hasattr(first.state, "engine"))

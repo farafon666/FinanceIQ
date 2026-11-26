@@ -48,6 +48,11 @@ class ValidationErrorResponse(BaseModel):
     error: ValidationErrorBody
 
 
+class AuthenticationRequired(HTTPException):
+    def __init__(self) -> None:
+        super().__init__(status_code=401)
+
+
 def error_response(
     status: int, *, headers: Mapping[str, str] | None = None
 ) -> JSONResponse:
@@ -61,6 +66,16 @@ def error_response(
 
 async def http_error_handler(request: Request, error: Exception) -> JSONResponse:
     assert isinstance(error, HTTPException)
+    if isinstance(error, AuthenticationRequired):
+        return JSONResponse(
+            status_code=401,
+            content={
+                "error": {
+                    "code": "authentication_required",
+                    "message": "Требуется вход в систему.",
+                }
+            },
+        )
     if error.status_code not in _ERRORS:
         _logger.error("internal_error")
         return error_response(500)

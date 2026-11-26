@@ -61,7 +61,13 @@ class ApplicationTests(unittest.TestCase):
                 schema = response.json()
                 self.assertEqual(
                     set(schema["paths"]),
-                    {"/api/v1/health", "/api/v1/auth/register", "/api/v1/auth/login"},
+                    {
+                        "/api/v1/health",
+                        "/api/v1/auth/register",
+                        "/api/v1/auth/login",
+                        "/api/v1/auth/me",
+                        "/api/v1/auth/logout",
+                    },
                 )
                 operation = schema["paths"]["/api/v1/health"]["get"]
                 self.assertNotIn("security", operation)
