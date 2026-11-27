@@ -5,7 +5,7 @@ from pathlib import Path
 from re import fullmatch
 from typing import Literal
 
-from pydantic import Field, SecretStr, ValidationError, field_validator
+from pydantic import AnyHttpUrl, Field, SecretStr, ValidationError, field_validator
 from pydantic_settings import (
     BaseSettings,
     DotEnvSettingsSource,
@@ -100,8 +100,27 @@ class Settings(_SettingsBase):
     app_env: Literal["development", "test", "production"] = "development"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     database_url: SecretStr = Field(repr=False)
+    public_origin: str | None = None
     auth_rate_limit_secret: SecretStr | None = Field(default=None, repr=False)
     auth_trusted_proxies: tuple[IPv4Address | IPv6Address, ...] = ()
+
+    @field_validator("public_origin")
+    @classmethod
+    def validate_public_origin(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        authority = value.removeprefix("https://")
+        if authority == value or any(
+            character in authority for character in "/\\@?#*,"
+        ):
+            raise ValueError("Expected one HTTPS origin.")
+        url = AnyHttpUrl(value)
+        origin = str(url).removesuffix("/")
+        if url.port == 0 or (
+            value != origin and not (url.port == 443 and value == f"{origin}:443")
+        ):
+            raise ValueError("Expected one HTTPS origin.")
+        return origin
 
     @field_validator("auth_rate_limit_secret")
     @classmethod

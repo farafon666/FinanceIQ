@@ -178,6 +178,36 @@ class ConfigurationTests(unittest.TestCase):
         os.environ["FINANCEIQ_LOG_LEVEL"] = "secret-sentinel"
         self.assert_safe_error(expected_field="FINANCEIQ_LOG_LEVEL")
 
+    def test_single_https_origin_matches_browser_serialization(self) -> None:
+        for value, expected in (
+            ("https://localhost:8000", "https://localhost:8000"),
+            ("https://financeiq.test", "https://financeiq.test"),
+            ("https://financeiq.test:443", "https://financeiq.test"),
+            ("https://[::1]:8443", "https://[::1]:8443"),
+        ):
+            with self.subTest(value=value):
+                os.environ["FINANCEIQ_PUBLIC_ORIGIN"] = value
+                self.assertEqual(load_settings().public_origin, expected)
+
+    def test_invalid_public_origins_fail_safely(self) -> None:
+        for value in (
+            "",
+            "*",
+            "http://localhost:8000",
+            "https://secret-sentinel.test/",
+            "https://financeiq.test/path",
+            "https://financeiq.test?",
+            "https://financeiq.test#",
+            "https://secret-sentinel@financeiq.test",
+            "https://financeiq.test, https://other.test",
+            "https://financeiq.test:0",
+            "https://financeiq.test:65536",
+            " https://financeiq.test",
+        ):
+            with self.subTest(value=value):
+                os.environ["FINANCEIQ_PUBLIC_ORIGIN"] = value
+                self.assert_safe_error(expected_field="FINANCEIQ_PUBLIC_ORIGIN")
+
     def test_unknown_file_key_is_rejected_without_disclosing_key_or_value(self) -> None:
         for content in (
             "secret-sentinel-key=secret-sentinel-value\n",

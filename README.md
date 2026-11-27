@@ -189,13 +189,17 @@ ReDoc, OAuth redirect Swagger и непрефиксированные `/docs`, `
 
 ### Локальная проверка Auth
 
-В `development` и `test` маршрут `POST /api/v1/auth/register` доступен через Swagger UI и принимает `application/json` с полями `email`, `password` и `timezone`. Перед локальной проверкой примените миграции к локальной БД. Укажите ключ IANA, например `Europe/Saratov`. Успешный `201` содержит `id`, канонический `email` и `timezone`. В той же транзакции создаются десять персональных категорий `default_categories_v1`. Повторная регистрация того же канонического email возвращает `409`. Вход выполняется отдельной командой. [D-12](docs/DECISIONS.md#d-12-auth)
+Откройте `https://localhost:8000/api/v1/docs` после запуска Compose и настройки доверия к локальному CA. Браузер сам добавляет `Origin` к изменяющим запросам. Для CLI передайте `Origin: https://localhost:8000` явно, подставив настроенный порт. Некорректный или отсутствующий `Origin` даёт `403 forbidden`.
+
+`POST /api/v1/auth/register` принимает `application/json` с полями `email`, `password` и `timezone`. Укажите ключ IANA, например `Europe/Saratov`. Успешный `201` содержит `id`, канонический `email` и `timezone`. В той же транзакции создаются десять персональных категорий `default_categories_v1`. Повторная регистрация того же канонического email возвращает `409`. Вход выполняется отдельной командой. [D-12](docs/DECISIONS.md#d-12-auth)
 
 `POST /api/v1/auth/login` принимает `application/json` с полями `email` и `password`. Успешный `204` содержит две `Secure` cookie, сессия действует 12 часов. При исчерпании лимита вход или регистрация возвращает `429` с `Retry-After`. [D-12](docs/DECISIONS.md#d-12-auth)
 
-`GET /api/v1/auth/me` возвращает профиль по действующей cookie `__Host-financeiq-session`. `POST /api/v1/auth/logout` принимает запрос без тела, отзывает предъявленную сессию и возвращает `204` с удалением обеих cookie. При недействительной сессии оба маршрута возвращают `401 authentication_required`. Маршруты Auth доступны в `development` и `test`. Включение в `production`, единый HTTPS-origin и проверки `Origin` и CSRF относятся к 3.6.
+`GET /api/v1/auth/me` возвращает профиль по действующей cookie `__Host-financeiq-session`. Для `POST /api/v1/auth/logout` отправьте значение cookie `__Host-financeiq-csrf` в заголовке `X-CSRF-Token`. Успешный `204` отзывает предъявленную сессию и удаляет обе cookie. Недействительная сессия даёт `401 authentication_required`, неверный или отсутствующий CSRF-токен при действующей сессии даёт `403 forbidden`.
 
-Для отдельного запуска задайте `FINANCEIQ_AUTH_RATE_LIMIT_SECRET` через окружение или явно выбранный `.env`. Используйте 64 hex-символа из криптографического генератора, например `secrets.token_hex(32)`, и сохраняйте один ключ у всех процессов, использующих эту БД, включая перезапуски. Без ключа вход и регистрация возвращают `500`.
+Для отдельного запуска задайте `FINANCEIQ_AUTH_RATE_LIMIT_SECRET` через окружение или явно выбранный `.env`. Используйте 64 hex-символа из криптографического генератора, например `secrets.token_hex(32)`, и сохраняйте один ключ у всех процессов, использующих эту БД, включая перезапуски. В `development` и `test` без ключа вход и регистрация возвращают `500`.
+
+При `FINANCEIQ_APP_ENV=production` приложение требует заданные `FINANCEIQ_PUBLIC_ORIGIN` и `FINANCEIQ_AUTH_RATE_LIMIT_SECRET` при запуске. `FINANCEIQ_PUBLIC_ORIGIN` задаёт публичный HTTPS-origin без пути, например `https://financeiq.example.org`. В `development` и `test` по умолчанию используется `https://localhost:8000`. В `production` TLS завершается на входном прокси, а backend доступен по внутренней сети. Swagger UI и OpenAPI доступны в `development` и `test`.
 
 `FINANCEIQ_AUTH_TRUSTED_PROXIES` принимает JSON-массив точных IP-адресов. По умолчанию он пуст. Указанный прокси должен перезаписывать `X-Forwarded-For` одним адресом клиента. Команды запуска оставляют обработку этого заголовка приложению и отключают access-лог Uvicorn.
 
@@ -211,7 +215,8 @@ if (-not (Test-Path -LiteralPath .env.compose)) { Copy-Item .env.compose.example
 python infra/compose/setup.py
 docker compose --env-file .env.compose config --quiet
 docker compose --env-file .env.compose up --build --wait --wait-timeout 180
-Invoke-RestMethod http://127.0.0.1:8000/api/v1/health
+docker compose --env-file .env.compose cp caddy:/data/caddy/pki/authorities/local/root.crt .secrets/compose/caddy-root.crt
+curl.exe --fail --cacert .secrets/compose/caddy-root.crt https://localhost:8000/api/v1/health
 ```
 
 ```bash
@@ -220,10 +225,13 @@ test -e .env.compose || cp .env.compose.example .env.compose
 python3 infra/compose/setup.py
 docker compose --env-file .env.compose config --quiet
 docker compose --env-file .env.compose up --build --wait --wait-timeout 180
-curl --fail http://127.0.0.1:8000/api/v1/health
+docker compose --env-file .env.compose cp caddy:/data/caddy/pki/authorities/local/root.crt .secrets/compose/caddy-root.crt
+curl --fail --cacert .secrets/compose/caddy-root.crt https://localhost:8000/api/v1/health
 ```
 
-`.env.compose` используется только для подстановок Compose: `FINANCEIQ_BACKEND_PORT=8000`, `FINANCEIQ_POSTGRES_PORT=5432`, `FINANCEIQ_SECRETS_DIR=./.secrets/compose`. При занятых портах измените их в этом файле; публикация остается только на `127.0.0.1`. Из контейнеров PostgreSQL доступна как `postgres:5432`, независимо от порта хоста. `.env.compose` не передается загрузчикам приложения или Alembic. Существующие `.env` и `.env.migrations` используются только при отдельном запуске backend/миграций на хосте.
+Для браузерной проверки импортируйте экспортированный `caddy-root.crt` в доверенные центры сертификации локального тестового профиля. Caddy сохраняет CA в volume `caddy_data`, поэтому обычный `down` и последующий `up` сохраняют доверие. Приватный ключ CA остаётся в этом volume. [Локальный TLS в Caddy](https://caddyserver.com/docs/running#local-https-with-docker)
+
+`.env.compose` используется только для подстановок Compose. `FINANCEIQ_BACKEND_PORT=8000` задаёт HTTPS-порт Caddy и порт настроенного `Origin`. `FINANCEIQ_POSTGRES_PORT=5432` задаёт порт PostgreSQL на хосте, а `FINANCEIQ_SECRETS_DIR=./.secrets/compose` — каталог секретов. При изменении HTTPS-порта подставьте его и в URL. Compose публикует Caddy и PostgreSQL на `127.0.0.1`. Из контейнеров PostgreSQL доступна как `postgres:5432`. Существующие `.env` и `.env.migrations` используются при отдельном запуске backend и миграций на хосте.
 
 Скрипт создает три разных пароля в `.secrets/compose`: `postgres_password`, `migrator_password`, `runtime_password`, а также `auth_rate_limit_secret` для backend. Повторно запустите `infra/compose/setup.py` перед первым запуском Compose после обновления до 3.4, чтобы добавить новый файл к существующему комплекту без замены паролей PostgreSQL. Неполный комплект паролей БД, пустой или недоступный файл приводят к безопасному отказу. При другом `FINANCEIQ_SECRETS_DIR` укажите тот же каталог через `python infra/compose/setup.py --directory <directory>`. Секреты не выводятся, не попадают в Git или Docker build context. В Linux каталог создается с `0700`, файлы — с `0444`: каталог защищает доступ на хосте, отдельные read-only mounts читаются непривилегированными процессами контейнеров. На Windows доступ на хосте определяется ACL каталога; атрибуты `uid/gid/mode` файловых secrets в Compose не заменяют эти права.
 
@@ -231,7 +239,8 @@ curl --fail http://127.0.0.1:8000/api/v1/health
 | --- | --- |
 | `postgres` | Администратор `postgres` владеет БД; имеет три файла паролей для первичной настройки |
 | `migrate` | Одноразовый `alembic upgrade head`, только секрет `financeiq_migrator` |
-| `backend` | Один процесс Uvicorn от UID 10001, только секрет `financeiq_runtime` |
+| `backend` | Внутренний Uvicorn от UID 10001 с runtime-паролем БД и секретом лимитов Auth |
+| `caddy` | Публичный локальный HTTPS-вход на `localhost` с проксированием `/api/v1` |
 
 Первый запуск пустого volume выполняет существующий bootstrap и задает пароли через `psql \password`, подавая их в stdin. PostgreSQL использует SCRAM для TCP-подключений. Миграции ожидают успешный TCP `pg_isready`; API запускается после успешных миграций. Контейнерный адаптер `python -m financeiq.core.container` поддерживает `serve`, `migrate [alembic arguments]` и `ready`; читает только секрет своей роли и формирует URL без передачи пароля через аргументы команд. Обычные `Settings` и HTTP-фабрика сохраняют прежние интерфейсы.
 

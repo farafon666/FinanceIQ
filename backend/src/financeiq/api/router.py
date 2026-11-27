@@ -8,9 +8,8 @@ from financeiq.modules.auth.router import router as auth_router
 API_PREFIX = "/api/v1"
 
 
-def create_router(*, auth_enabled: bool) -> APIRouter:
+def create_router() -> APIRouter:
     router = APIRouter(prefix=API_PREFIX)
     router.include_router(health_router)
-    if auth_enabled:
-        router.include_router(auth_router)
+    router.include_router(auth_router)
     return router

@@ -2,6 +2,8 @@
 
 import json
 import os
+import socket
+import ssl
 import stat
 import subprocess
 import sys
@@ -33,6 +35,7 @@ class ComposeIntegrationTests(unittest.TestCase):
     passwords: ClassVar[dict[str, str]]
     sensitive_values: ClassVar[list[str]]
     environment: ClassVar[dict[str, str]]
+    ca_certificate: ClassVar[Path]
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -69,9 +72,13 @@ class ComposeIntegrationTests(unittest.TestCase):
             for key, value in os.environ.items()
             if not key.startswith(("FINANCEIQ_", "COMPOSE_"))
         }
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            https_port: int = listener.getsockname()[1]
+        cls.ca_certificate = cls.directory / "caddy-root.crt"
         cls.environment.update(
             FINANCEIQ_SECRETS_DIR=cls.directory.as_posix(),
-            FINANCEIQ_BACKEND_PORT="0",
+            FINANCEIQ_BACKEND_PORT=str(https_port),
             FINANCEIQ_POSTGRES_PORT="0",
         )
         cls.addClassCleanup(cls.cleanup_project)
@@ -147,10 +154,30 @@ class ComposeIntegrationTests(unittest.TestCase):
     def up(self) -> None:
         self.compose("up", "--wait", "--wait-timeout", "180", timeout=240)
 
-    def health_url(self) -> str:
-        address = self.compose("port", "backend", "8000").stdout.strip()
-        self.assertTrue(address.startswith("127.0.0.1:"))
-        return f"http://{address}/api/v1/health"
+    def tls_client(self) -> httpx.Client:
+        port = self.environment["FINANCEIQ_BACKEND_PORT"]
+        self.assertEqual(
+            self.compose("port", "caddy", "443").stdout.strip(), f"127.0.0.1:{port}"
+        )
+        if not self.ca_certificate.exists():
+            deadline = time.monotonic() + 15
+            while True:
+                copied = self.compose(
+                    "cp",
+                    "caddy:/data/caddy/pki/authorities/local/root.crt",
+                    str(self.ca_certificate),
+                    check=False,
+                )
+                if copied.returncode == 0:
+                    break
+                if time.monotonic() >= deadline:
+                    self.fail("Caddy did not make its CA certificate available.")
+                time.sleep(0.5)
+        return httpx.Client(
+            base_url=f"https://localhost:{port}",
+            trust_env=False,
+            verify=ssl.create_default_context(cafile=str(self.ca_certificate)),
+        )
 
     def sql(self, statement: str) -> str:
         return self.compose(
@@ -181,22 +208,44 @@ class ComposeIntegrationTests(unittest.TestCase):
         self.assertEqual(
             self.required_state("backend")["State"]["Health"]["Status"], "healthy"
         )
-        with httpx.Client(trust_env=False) as client:
-            response = client.get(self.health_url(), timeout=5)
+        self.assertFalse(self.required_state("backend")["HostConfig"]["PortBindings"])
+        with self.tls_client() as client:
+            response = client.get("/api/v1/health")
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json(), {"status": "ok"})
-            auth_url = self.health_url().removesuffix("/health") + "/auth"
+            self.assertEqual(client.get("/api/v1/health/").status_code, 404)
+            auth_url = "/api/v1/auth"
+            origin = {"Origin": str(client.base_url).removesuffix("/")}
             credentials = {
                 "email": "compose@example.org",
                 "password": "synthetic compose password",
             }
             registration = client.post(
-                auth_url + "/register", json=credentials | {"timezone": "UTC"}
+                auth_url + "/register",
+                json=credentials | {"timezone": "UTC"},
+                headers=origin,
             )
             self.assertEqual(registration.status_code, 201)
-            login = client.post(auth_url + "/login", json=credentials)
+            login = client.post(auth_url + "/login", json=credentials, headers=origin)
             self.assertEqual(login.status_code, 204)
             self.assertEqual(len(login.headers.get_list("set-cookie")), 2)
+            self.assertEqual(client.get(auth_url + "/me").json(), registration.json())
+            self.assertEqual(
+                client.post(auth_url + "/logout", headers=origin).status_code, 403
+            )
+            csrf = client.cookies["__Host-financeiq-csrf"]
+            self.sensitive_values.extend(
+                (csrf, client.cookies["__Host-financeiq-session"])
+            )
+            logout = client.post(
+                auth_url + "/logout", headers=origin | {"X-CSRF-Token": csrf}
+            )
+            self.assertEqual(logout.status_code, 204)
+            self.assertFalse(client.cookies)
+            self.assertEqual(client.get(auth_url + "/me").status_code, 401)
+            # Leave an active session for the existing persistence checks.
+            login = client.post(auth_url + "/login", json=credentials, headers=origin)
+            self.assertEqual(login.status_code, 204)
         current = self.compose(
             "run", "--rm", "--no-deps", "migrate", "migrate", "current"
         )
@@ -239,7 +288,9 @@ class ComposeIntegrationTests(unittest.TestCase):
             "up", "--force-recreate", "--wait", "--wait-timeout", "180", timeout=240
         )
         self.assertEqual(self.sql("SELECT value FROM public.compose_probe"), "17")
-        self.assertEqual(self.sql("SELECT count(*) FROM auth_sessions"), "1")
+        self.assertEqual(
+            self.sql("SELECT count(*) FROM auth_sessions WHERE revoked_at IS NULL"), "1"
+        )
         self.assertEqual(self.sql("SELECT count(*) FROM auth_rate_limits"), "3")
         self.compose("down")
         self.up()
@@ -247,10 +298,8 @@ class ComposeIntegrationTests(unittest.TestCase):
 
         self.compose("stop", "postgres")
         self.wait_health("backend", "unhealthy")
-        with httpx.Client(trust_env=False) as client:
-            self.assertEqual(
-                client.get(self.health_url(), timeout=5).json(), {"status": "ok"}
-            )
+        with self.tls_client() as client:
+            self.assertEqual(client.get("/api/v1/health").json(), {"status": "ok"})
         probe = self.compose(
             "exec",
             "-T",

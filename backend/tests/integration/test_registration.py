@@ -23,6 +23,7 @@ from tests.support.postgres import TestPostgres
 pytestmark = [pytest.mark.postgres, pytest.mark.asyncio]
 
 REGISTER = "/api/v1/auth/register"
+ORIGIN = "https://test"
 PASSWORD = " e\u0301" + "x" * 12 + "Z"
 REQUEST = {
     "email": "  Test.Name+Work@EXAMPLE.ORG  ",
@@ -48,6 +49,7 @@ async def client(
     runtime_postgres: TestPostgres, monkeypatch: pytest.MonkeyPatch
 ) -> AsyncIterator[httpx.AsyncClient]:
     monkeypatch.setenv("FINANCEIQ_APP_ENV", "test")
+    monkeypatch.setenv("FINANCEIQ_PUBLIC_ORIGIN", ORIGIN)
     monkeypatch.setenv("FINANCEIQ_AUTH_RATE_LIMIT_SECRET", "ab" * 32)
     monkeypatch.setenv(
         "FINANCEIQ_DATABASE_URL",
@@ -57,7 +59,9 @@ async def client(
     async with (
         app.router.lifespan_context(app),
         httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
+            transport=httpx.ASGITransport(app=app),
+            base_url=ORIGIN,
+            headers={"Origin": ORIGIN},
         ) as test_client,
     ):
         yield test_client

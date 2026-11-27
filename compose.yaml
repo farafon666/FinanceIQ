@@ -45,9 +45,8 @@ services:
     environment:
       FINANCEIQ_APP_ENV: development
       FINANCEIQ_LOG_LEVEL: INFO
+      FINANCEIQ_PUBLIC_ORIGIN: https://localhost:${FINANCEIQ_BACKEND_PORT:-8000}
       FINANCEIQ_AUTH_TRUSTED_PROXIES: ${FINANCEIQ_AUTH_TRUSTED_PROXIES:-[]}
-    ports:
-      - "127.0.0.1:${FINANCEIQ_BACKEND_PORT:-8000}:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -63,8 +62,22 @@ services:
       start_period: 15s
       retries: 6
 
+  caddy:
+    image: caddy:2.11.9-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${FINANCEIQ_BACKEND_PORT:-8000}:443"
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
 volumes:
   postgres_data:
+  caddy_data:
+  caddy_config:
 
 secrets:
   postgres_password:

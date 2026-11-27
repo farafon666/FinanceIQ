@@ -1,6 +1,5 @@
 """Auth use cases and their transaction boundaries."""
 
-from base64 import b64decode, urlsafe_b64encode
 from dataclasses import dataclass, field
 from datetime import timedelta
 from hashlib import sha256
@@ -10,6 +9,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from financeiq.db.session import transaction
+from financeiq.modules.auth.domain import TOKEN_BYTES, encode_token, token_digest
 from financeiq.modules.auth.passwords import hash_password, verify_password
 from financeiq.modules.auth.repository import (
     find_active_credentials,
@@ -32,8 +32,6 @@ class InvalidCredentials(Exception):
 
 
 SESSION_TTL = timedelta(hours=12)
-_SECRET_BYTES = 32
-_ENCODED_SECRET_LENGTH = 43
 
 
 @dataclass(frozen=True)
@@ -89,7 +87,7 @@ async def login_user(
                 continue
             if replacement is not None:
                 await update_password_hash(session, user_id, replacement)
-            token, csrf_token = token_bytes(_SECRET_BYTES), token_bytes(_SECRET_BYTES)
+            token, csrf_token = token_bytes(TOKEN_BYTES), token_bytes(TOKEN_BYTES)
             await insert_auth_session(
                 session,
                 user_id,
@@ -97,28 +95,19 @@ async def login_user(
                 sha256(csrf_token).digest(),
                 SESSION_TTL,
             )
-        return IssuedSession(_encode_secret(token), _encode_secret(csrf_token))
+        return IssuedSession(encode_token(token), encode_token(csrf_token))
     raise InvalidCredentials()
-
-
-def _encode_secret(secret: bytes) -> str:
-    return urlsafe_b64encode(secret).rstrip(b"=").decode("ascii")
 
 
 async def authenticate_session(
     session: AsyncSession, token: str | None
 ) -> AuthenticatedSession | None:
-    if token is None or len(token) != _ENCODED_SECRET_LENGTH:
-        return None
-    try:
-        secret = b64decode(token + "=", altchars=b"-_", validate=True)
-    except ValueError:
-        return None
-    if len(secret) != _SECRET_BYTES or _encode_secret(secret) != token:
+    digest = token_digest(token)
+    if digest is None:
         return None
 
     async with transaction(session):
-        record = await find_valid_session(session, sha256(secret).digest())
+        record = await find_valid_session(session, digest)
     return AuthenticatedSession(*record) if record is not None else None
 
 

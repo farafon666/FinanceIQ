@@ -35,6 +35,7 @@ LOGIN = "/api/v1/auth/login"
 REGISTER = "/api/v1/auth/register"
 ME = "/api/v1/auth/me"
 LOGOUT = "/api/v1/auth/logout"
+ORIGIN = "https://test"
 SESSION_COOKIE = "__Host-financeiq-session"
 CSRF_COOKIE = "__Host-financeiq-csrf"
 
@@ -44,6 +45,7 @@ def auth_environment(
     runtime_postgres: TestPostgres, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("FINANCEIQ_APP_ENV", "test")
+    monkeypatch.setenv("FINANCEIQ_PUBLIC_ORIGIN", ORIGIN)
     monkeypatch.setenv(
         "FINANCEIQ_DATABASE_URL",
         runtime_postgres.url("financeiq_runtime", sqlalchemy=True),
@@ -61,7 +63,8 @@ async def auth_client(ip: str = "192.0.2.1") -> AsyncIterator[httpx.AsyncClient]
         app.router.lifespan_context(app),
         httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app, client=(ip, 12345)),
-            base_url="https://test",
+            base_url=ORIGIN,
+            headers={"Origin": ORIGIN},
         ) as client,
     ):
         yield client
@@ -185,6 +188,31 @@ async def test_invalid_credentials_have_one_response(
         assert private not in responses[0].text + caplog.text
     async with AsyncSession(financial_engine) as observer:
         assert await observer.scalar(select(AuthSession.id)) is None
+
+
+async def test_rejected_origin_does_not_create_records_or_reserve_attempts(
+    financial_engine: AsyncEngine,
+) -> None:
+    credentials = {"email": EMAIL, "password": "Synthetic password for origin tests"}
+    registration = credentials | {"timezone": "UTC"}
+    async with auth_client() as client:
+        response = await client.post(REGISTER, json=registration)
+        assert response.status_code == 201
+        for path, payload in (
+            (REGISTER, registration | {"email": "other@example.org"}),
+            (LOGIN, credentials),
+        ):
+            response = await client.post(path, json=payload, headers={"Origin": "null"})
+            assert response.status_code == 403
+            assert "set-cookie" not in response.headers
+
+    async with AsyncSession(financial_engine) as observer:
+        assert list(await observer.scalars(select(User.email))) == [EMAIL]
+        assert await observer.scalar(select(AuthSession.id)) is None
+        counters = await observer.execute(
+            select(AuthRateLimit.scope, AuthRateLimit.attempt_count)
+        )
+        assert counters.tuples().all() == [("register_ip", 1)]
 
 
 async def test_concurrent_registration_limit_survives_new_app(
@@ -438,6 +466,7 @@ def assert_authentication_required(response: httpx.Response) -> None:
 
 async def test_session_profile_and_concurrent_logout_preserve_other_session(
     financial_engine: AsyncEngine,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     async with auth_client() as first, auth_client() as second:
         expected_profile = await register_and_login(first)
@@ -452,6 +481,29 @@ async def test_session_profile_and_concurrent_logout_preserve_other_session(
             )
         )
         assert second.cookies[SESSION_COOKIE] != first_token
+        first_csrf = first.cookies[CSRF_COOKIE]
+        second_csrf = second.cookies[CSRF_COOKIE]
+        for invalid_headers in (
+            [],
+            [("X-CSRF-Token", "private-token-marker")],
+            [("X-CSRF-Token", second_csrf)],
+            [("X-CSRF-Token", first_csrf), ("X-CSRF-Token", first_csrf)],
+            [("X-CSRF-Token", first_csrf), ("Origin", "https://other.test")],
+        ):
+            response = await first.post(LOGOUT, headers=invalid_headers)
+            assert response.status_code == 403
+            assert response.json()["error"]["code"] == "forbidden"
+            assert response.headers["cache-control"] == "no-store"
+            assert "set-cookie" not in response.headers
+            for private in (
+                first_token,
+                first_csrf,
+                second_csrf,
+                "private-token-marker",
+            ):
+                assert private not in response.text + caplog.text
+        assert (await first.get(ME)).json() == expected_profile
+        assert (await second.get(ME)).json() == expected_profile
         async with financial_engine.connect() as observer:
             times = select(AuthSession.id, AuthSession.expires_at).order_by(
                 AuthSession.id
@@ -464,7 +516,10 @@ async def test_session_profile_and_concurrent_logout_preserve_other_session(
             assert "set-cookie" not in profile.headers
             assert (await observer.execute(times)).all() == before
 
-        headers = {"Cookie": f"{SESSION_COOKIE}={first_token}"}
+        headers = {
+            "Cookie": f"{SESSION_COOKIE}={first_token}",
+            "X-CSRF-Token": first_csrf,
+        }
         first_result, second_result = await asyncio.gather(
             first.post(LOGOUT, headers=headers),
             first.post(LOGOUT, headers=headers),
@@ -488,7 +543,9 @@ async def test_session_profile_and_concurrent_logout_preserve_other_session(
             assert bool(cookie["httponly"]) == (name == SESSION_COOKIE)
             assert name not in first.cookies
         assert_authentication_required(refused)
-        assert_authentication_required(await first.get(ME, headers=headers))
+        assert_authentication_required(
+            await first.get(ME, headers={"Cookie": headers["Cookie"]})
+        )
         assert (await second.get(ME)).json() == expected_profile
 
     async with financial_engine.connect() as observer:
@@ -554,7 +611,11 @@ async def test_logout_checks_expiry_after_waiting_for_session_lock(
             async with holder.begin(), asyncio.timeout(5):
                 holder_pid = await holder.scalar(text("SELECT pg_backend_pid()"))
                 await holder.execute(text("SELECT id FROM auth_sessions FOR UPDATE"))
-                task = asyncio.create_task(client.post(LOGOUT))
+                task = asyncio.create_task(
+                    client.post(
+                        LOGOUT, headers={"X-CSRF-Token": client.cookies[CSRF_COOKIE]}
+                    )
+                )
                 while not await holder.scalar(
                     text("""
                     SELECT EXISTS (
@@ -599,7 +660,9 @@ async def test_logout_commit_failure_preserves_session_and_browser_cookies(
                 """)
             )
         try:
-            response = await client.post(LOGOUT)
+            response = await client.post(
+                LOGOUT, headers={"X-CSRF-Token": client.cookies[CSRF_COOKIE]}
+            )
             assert response.status_code == 500
             assert response.json()["error"]["code"] == "internal_error"
             assert response.headers["cache-control"] == "no-store"

@@ -27,6 +27,8 @@ class ApplicationTests(unittest.TestCase):
         clean_environment["FINANCEIQ_DATABASE_URL"] = (
             "postgresql+asyncpg://test:unused@127.0.0.1:5432/financeiq_test"
         )
+        clean_environment["FINANCEIQ_PUBLIC_ORIGIN"] = "https://financeiq.test"
+        clean_environment["FINANCEIQ_AUTH_RATE_LIMIT_SECRET"] = "ab" * 32
         self.enterContext(patch.dict(os.environ, clean_environment, clear=True))
         self.directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.env_file = self.directory / ".env"
@@ -91,11 +93,12 @@ class ApplicationTests(unittest.TestCase):
 
         responses = operation["responses"]
         self.assertEqual(
-            set(responses), {"201", "400", "409", "415", "422", "429", "500"}
+            set(responses), {"201", "400", "403", "409", "415", "422", "429", "500"}
         )
         for status, model_name in (
             ("201", "UserProfile"),
             ("400", "ErrorResponse"),
+            ("403", "ErrorResponse"),
             ("409", "ErrorResponse"),
             ("415", "ErrorResponse"),
             ("422", "ValidationErrorResponse"),
@@ -118,7 +121,7 @@ class ApplicationTests(unittest.TestCase):
 
         responses = operation["responses"]
         self.assertEqual(
-            set(responses), {"204", "400", "401", "415", "422", "429", "500"}
+            set(responses), {"204", "400", "401", "403", "415", "422", "429", "500"}
         )
         self.assertNotIn("content", responses["204"])
         self.assertIn("Set-Cookie", responses["204"]["headers"])
@@ -132,6 +135,14 @@ class ApplicationTests(unittest.TestCase):
             for path in ("/api/v1/docs", "/api/v1/openapi.json"):
                 with self.subTest(path=path):
                     self.assertEqual(client.get(path).status_code, 404)
+
+    def test_production_requires_explicit_auth_configuration(self) -> None:
+        os.environ["FINANCEIQ_APP_ENV"] = "production"
+        for field in ("FINANCEIQ_PUBLIC_ORIGIN", "FINANCEIQ_AUTH_RATE_LIMIT_SECRET"):
+            with self.subTest(field=field), patch.dict(os.environ):
+                del os.environ[field]
+                with self.assertRaisesRegex(ConfigurationError, field):
+                    create_app()
 
     def test_unused_documentation_routes_are_absent_in_every_environment(self) -> None:
         for app_env in ("development", "test", "production"):

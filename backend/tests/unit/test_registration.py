@@ -6,11 +6,13 @@ from collections.abc import Iterator
 
 import pytest
 from fastapi.testclient import TestClient
+from httpx import SyncByteStream
 
 from financeiq.main import create_app
 
 REGISTER = "/api/v1/auth/register"
 LOGIN = "/api/v1/auth/login"
+ORIGIN = "https://financeiq.test:8443"
 VALID = {
     "email": "private-auth@example.org",
     "password": "Private password marker",
@@ -18,16 +20,59 @@ VALID = {
 }
 
 
+class UnreadableBody(SyncByteStream):
+    def __iter__(self) -> Iterator[bytes]:
+        raise AssertionError("The rejected request body must stay unread.")
+
+
 @pytest.fixture
 def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     monkeypatch.setenv("FINANCEIQ_APP_ENV", "test")
+    monkeypatch.setenv("FINANCEIQ_PUBLIC_ORIGIN", ORIGIN)
     monkeypatch.delenv("FINANCEIQ_AUTH_RATE_LIMIT_SECRET", raising=False)
     monkeypatch.setenv(
         "FINANCEIQ_DATABASE_URL",
         "postgresql+asyncpg://test:unused@127.0.0.1:5432/financeiq_test",
     )
-    with TestClient(create_app()) as test_client:
+    with TestClient(
+        create_app(), base_url=ORIGIN, headers={"Origin": ORIGIN}
+    ) as test_client:
         yield test_client
+
+
+@pytest.mark.parametrize("path", [REGISTER, LOGIN])
+@pytest.mark.parametrize(
+    "origins",
+    [
+        [],
+        ["null"],
+        ["http://financeiq.test:8443"],
+        ["https://financeiq.test"],
+        ["https://other.test:8443"],
+        ["https://financeiq.test:8443/"],
+        [ORIGIN, ORIGIN],
+        [f"{ORIGIN}, {ORIGIN}"],
+    ],
+)
+def test_invalid_origin_is_rejected_before_reading_body(
+    client: TestClient, path: str, origins: list[str]
+) -> None:
+    request = client.build_request(
+        "POST",
+        path,
+        content=UnreadableBody(),
+        headers={
+            "Content-Type": "application/json",
+            "X-Forwarded-Host": "financeiq.test",
+        },
+    )
+    del request.headers["Origin"]
+    request.headers.update([("Origin", value) for value in origins])
+    response = client.send(request)
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "forbidden"
+    assert response.headers["cache-control"] == "no-store"
+    assert "set-cookie" not in response.headers
 
 
 @pytest.mark.parametrize(
@@ -114,19 +159,21 @@ def test_registration_route_errors_are_not_cached(client: TestClient) -> None:
 
 
 @pytest.mark.parametrize("path", [REGISTER, LOGIN])
-def test_production_has_no_auth_commands(
+def test_production_checks_origin_on_auth_commands(
     monkeypatch: pytest.MonkeyPatch, path: str
 ) -> None:
     monkeypatch.setenv("FINANCEIQ_APP_ENV", "production")
+    monkeypatch.setenv("FINANCEIQ_PUBLIC_ORIGIN", ORIGIN)
+    monkeypatch.setenv("FINANCEIQ_AUTH_RATE_LIMIT_SECRET", "ab" * 32)
     monkeypatch.setenv(
         "FINANCEIQ_DATABASE_URL",
         "postgresql+asyncpg://test:unused@127.0.0.1:5432/financeiq_test",
     )
     with TestClient(create_app()) as client:
         response = client.post(path, json=VALID)
-    assert response.status_code == 404
+    assert response.status_code == 403
     assert response.headers["cache-control"] == "no-store"
-    assert response.json()["error"]["code"] == "not_found"
+    assert response.json()["error"]["code"] == "forbidden"
 
 
 def test_login_validation_and_missing_secret(client: TestClient) -> None:
