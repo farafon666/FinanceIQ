@@ -197,6 +197,8 @@ ReDoc, OAuth redirect Swagger и непрефиксированные `/docs`, `
 
 `GET /api/v1/auth/me` возвращает профиль по действующей cookie `__Host-financeiq-session`. Для `POST /api/v1/auth/logout` отправьте значение cookie `__Host-financeiq-csrf` в заголовке `X-CSRF-Token`. Успешный `204` отзывает предъявленную сессию и удаляет обе cookie. Недействительная сессия даёт `401 authentication_required`, неверный или отсутствующий CSRF-токен при действующей сессии даёт `403 forbidden`.
 
+Для смены часового пояса отправьте `PATCH /api/v1/auth/me` с `Content-Type: application/json`, `Origin` и `X-CSRF-Token`, как для других защищённых изменений. Передайте, например, `{"timezone":"Europe/Saratov"}`. Ответ `200` содержит обновлённый профиль. Следующий `GET /api/v1/auth/me` возвращает сохранённую зону. [D-12](docs/DECISIONS.md#d-12-auth)
+
 Для отдельного запуска задайте `FINANCEIQ_AUTH_RATE_LIMIT_SECRET` через окружение или явно выбранный `.env`. Используйте 64 hex-символа из криптографического генератора, например `secrets.token_hex(32)`, и сохраняйте один ключ у всех процессов, использующих эту БД, включая перезапуски. В `development` и `test` без ключа вход и регистрация возвращают `500`.
 
 При `FINANCEIQ_APP_ENV=production` приложение требует заданные `FINANCEIQ_PUBLIC_ORIGIN` и `FINANCEIQ_AUTH_RATE_LIMIT_SECRET` при запуске. `FINANCEIQ_PUBLIC_ORIGIN` задаёт публичный HTTPS-origin без пути, например `https://financeiq.example.org`. В `development` и `test` по умолчанию используется `https://localhost:8000`. В `production` TLS завершается на входном прокси, а backend доступен по внутренней сети. Swagger UI и OpenAPI доступны в `development` и `test`.

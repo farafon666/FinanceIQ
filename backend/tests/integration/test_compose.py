@@ -237,6 +237,16 @@ class ComposeIntegrationTests(unittest.TestCase):
             self.sensitive_values.extend(
                 (csrf, client.cookies["__Host-financeiq-session"])
             )
+            updated = client.patch(
+                auth_url + "/me",
+                json={"timezone": "Europe/Saratov"},
+                headers=origin | {"X-CSRF-Token": csrf},
+            )
+            self.assertEqual(updated.status_code, 200)
+            self.assertEqual(
+                updated.json(), registration.json() | {"timezone": "Europe/Saratov"}
+            )
+            self.assertEqual(client.get(auth_url + "/me").json(), updated.json())
             logout = client.post(
                 auth_url + "/logout", headers=origin | {"X-CSRF-Token": csrf}
             )

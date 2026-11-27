@@ -104,6 +104,18 @@ async def find_valid_session(
     return result.tuples().one_or_none()
 
 
+async def update_user_timezone(
+    session: AsyncSession, user_id: UUID, timezone: str
+) -> tuple[UUID, str, str] | None:
+    result = await session.execute(
+        update(User)
+        .where(User.id == user_id, User.is_active)
+        .values(timezone=timezone)
+        .returning(User.id, User.email, User.timezone)
+    )
+    return result.tuples().one_or_none()
+
+
 async def revoke_auth_session(session: AsyncSession, session_id: UUID) -> bool:
     locked_id = await session.scalar(
         select(AuthSession.id)

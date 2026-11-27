@@ -1,14 +1,17 @@
 """Auth request and profile contracts."""
 
+from typing import Annotated
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, SecretStr, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, SecretStr, field_validator
 
 from financeiq.modules.auth.domain import (
     normalize_password,
     validate_email_address,
     validate_timezone,
 )
+
+IanaTimezone = Annotated[str, AfterValidator(validate_timezone)]
 
 
 class LoginRequest(BaseModel):
@@ -36,7 +39,7 @@ class LoginRequest(BaseModel):
 
 
 class RegistrationRequest(LoginRequest):
-    timezone: str
+    timezone: IanaTimezone
 
     @field_validator("password")
     @classmethod
@@ -45,10 +48,11 @@ class RegistrationRequest(LoginRequest):
             raise ValueError("Password length is outside the allowed range.")
         return value
 
-    @field_validator("timezone")
-    @classmethod
-    def _timezone(cls, value: str) -> str:
-        return validate_timezone(value)
+
+class TimezoneUpdateRequest(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid", hide_input_in_errors=True)
+
+    timezone: IanaTimezone
 
 
 class UserProfile(BaseModel):

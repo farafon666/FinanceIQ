@@ -29,12 +29,14 @@ from financeiq.modules.auth.rate_limits import reserve_attempt
 from financeiq.modules.auth.schemas import (
     LoginRequest,
     RegistrationRequest,
+    TimezoneUpdateRequest,
     UserProfile,
 )
 from financeiq.modules.auth.service import (
     SESSION_TTL,
     EmailAlreadyRegistered,
     InvalidCredentials,
+    change_timezone,
     login_user,
     logout_user,
     register_user,
@@ -90,11 +92,17 @@ router = APIRouter(prefix=AUTH_PREFIX, tags=["auth"], route_class=SameOriginRout
 _json_router = APIRouter(route_class=JsonRoute)
 _internal_error = {"model": ErrorResponse, "description": "Internal error"}
 _forbidden_origin = {"model": ErrorResponse, "description": "Origin rejected"}
-_auth_errors: dict[int | str, dict[str, Any]] = {
+_forbidden_write = {
+    "model": ErrorResponse,
+    "description": "Origin or CSRF token rejected",
+}
+_json_errors: dict[int | str, dict[str, Any]] = {
     400: {"model": ErrorResponse, "description": "Invalid JSON"},
-    403: _forbidden_origin,
     415: {"model": ErrorResponse, "description": "Unsupported media type"},
     422: {"model": ValidationErrorResponse, "description": "Invalid request fields"},
+}
+_auth_errors = _json_errors | {
+    403: _forbidden_origin,
     429: {
         "model": ErrorResponse,
         "description": "Auth rate limit reached",
@@ -105,6 +113,16 @@ _auth_errors: dict[int | str, dict[str, Any]] = {
 _session_errors: dict[int | str, dict[str, Any]] = {
     401: {"model": ErrorResponse, "description": "Authentication required"},
     500: _internal_error,
+}
+_csrf_openapi = {
+    "parameters": [
+        {
+            "name": CSRF_HEADER,
+            "in": "header",
+            "required": True,
+            "schema": {"type": "string"},
+        }
+    ]
 }
 _cookie_headers = {
     "Set-Cookie": {
@@ -227,6 +245,25 @@ async def me(current: CurrentSession) -> UserProfile:
     )
 
 
+@_json_router.patch(
+    "/me",
+    responses=_json_errors | _session_errors | {403: _forbidden_write},
+    openapi_extra=_csrf_openapi,
+)
+async def patch_timezone(
+    payload: TimezoneUpdateRequest,
+    current: CurrentWriteSession,
+    session: DatabaseSession,
+) -> UserProfile:
+    profile = await change_timezone(
+        session, user_id=current.user_id, timezone=payload.timezone
+    )
+    if profile is None:
+        raise AuthenticationRequired()
+    user_id, email, timezone = profile
+    return UserProfile(id=user_id, email=email, timezone=timezone)
+
+
 @router.post(
     "/logout",
     status_code=204,
@@ -234,18 +271,9 @@ async def me(current: CurrentSession) -> UserProfile:
     responses=_session_errors
     | {
         204: {"description": "Session revoked", "headers": _cookie_headers},
-        403: {"model": ErrorResponse, "description": "Origin or CSRF token rejected"},
+        403: _forbidden_write,
     },
-    openapi_extra={
-        "parameters": [
-            {
-                "name": CSRF_HEADER,
-                "in": "header",
-                "required": True,
-                "schema": {"type": "string"},
-            }
-        ]
-    },
+    openapi_extra=_csrf_openapi,
 )
 async def logout(current: CurrentWriteSession, session: DatabaseSession) -> Response:
     if not await logout_user(session, current.id):

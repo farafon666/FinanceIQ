@@ -573,8 +573,16 @@ async def test_stored_invalid_session_fails_before_cleanup(
             await connection.execute(text(state))
         assert_authentication_required(await client.get(ME))
         assert_authentication_required(await client.post(LOGOUT))
+        assert_authentication_required(
+            await client.patch(
+                ME,
+                json={"timezone": "Europe/Saratov"},
+                headers={"X-CSRF-Token": client.cookies[CSRF_COOKIE]},
+            )
+        )
     async with financial_engine.connect() as connection:
         assert await connection.scalar(select(AuthSession.id)) is not None
+        assert await connection.scalar(select(User.timezone)) == "UTC"
 
 
 async def test_unknown_session_is_unauthenticated() -> None:
@@ -593,6 +601,123 @@ async def test_profile_is_scoped_to_the_session_owner(
         assert (await second.get(ME, params={"id": first_profile["id"]})).json() == (
             second_profile
         )
+
+
+async def test_timezone_update_is_visible_to_the_owners_other_session(
+    financial_engine: AsyncEngine,
+) -> None:
+    async with auth_client() as first, auth_client() as second, auth_client() as other:
+        profile = await register_and_login(first)
+        session_secrets(
+            await second.post(
+                LOGIN,
+                json={
+                    "email": EMAIL,
+                    "password": "Synthetic password for session tests",
+                },
+            )
+        )
+        other_profile = await register_and_login(other, "other@example.org")
+        async with financial_engine.connect() as observer:
+            sessions = select(AuthSession.id, AuthSession.expires_at).order_by(
+                AuthSession.id
+            )
+            before = (await observer.execute(sessions)).all()
+            response = await first.patch(
+                ME,
+                json={"timezone": "Europe/Saratov"},
+                headers={"X-CSRF-Token": first.cookies[CSRF_COOKIE]},
+            )
+            assert response.status_code == 200
+            updated = profile | {"timezone": "Europe/Saratov"}
+            assert response.json() == updated
+            assert response.headers["cache-control"] == "no-store"
+            assert "set-cookie" not in response.headers
+            assert (await second.get(ME)).json() == updated
+            assert (await other.get(ME)).json() == other_profile
+            assert (await observer.execute(sessions)).all() == before
+
+
+@pytest.mark.usefixtures("financial_engine")
+async def test_timezone_update_rejects_csrf_and_invalid_fields(
+    subtests: pytest.Subtests,
+) -> None:
+    async with auth_client() as client, auth_client() as other:
+        profile = await register_and_login(client)
+        other_profile = await register_and_login(other, "other@example.org")
+        csrf = client.cookies[CSRF_COOKIE]
+        valid = {"timezone": "Europe/Saratov"}
+        for headers in ({}, {"X-CSRF-Token": other.cookies[CSRF_COOKIE]}):
+            response = await client.patch(ME, json=valid, headers=headers)
+            assert response.status_code == 403
+            assert response.json()["error"]["code"] == "forbidden"
+            assert response.headers["cache-control"] == "no-store"
+
+        for payload, path, code in (
+            ({}, ["timezone"], "required"),
+            ({"timezone": "Unknown/Private_Zone"}, ["timezone"], "invalid_value"),
+            ({"timezone": " Europe/Saratov "}, ["timezone"], "invalid_value"),
+            ({"timezone": 123}, ["timezone"], "invalid_type"),
+            ({"timezone": None}, ["timezone"], "invalid_type"),
+            (valid | {"id": other_profile["id"]}, [], "unknown_field"),
+            (valid | {"email": other_profile["email"]}, [], "unknown_field"),
+        ):
+            with subtests.test(payload=payload):
+                response = await client.patch(
+                    ME, json=payload, headers={"X-CSRF-Token": csrf}
+                )
+                assert response.status_code == 422
+                assert response.headers["cache-control"] == "no-store"
+                error = response.json()["error"]
+                assert error["code"] == "validation_error"
+                assert error["fields"] == [
+                    {"location": "body", "path": path, "code": code}
+                ]
+                assert "Unknown/Private_Zone" not in response.text
+        assert (await client.get(ME)).json() == profile
+        assert (await other.get(ME)).json() == other_profile
+
+
+@pytest.mark.usefixtures("financial_engine")
+async def test_timezone_commit_failure_preserves_saved_profile(
+    financial_migrator: AsyncEngine,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async with auth_client() as client:
+        profile = await register_and_login(client)
+        async with financial_migrator.begin() as connection:
+            await connection.execute(
+                text("""
+                CREATE FUNCTION auth_test_timezone_failure() RETURNS trigger LANGUAGE plpgsql
+                AS $$ BEGIN RAISE EXCEPTION 'private-timezone-failure'; END $$
+                """)
+            )
+            await connection.execute(
+                text("""
+                CREATE CONSTRAINT TRIGGER auth_test_timezone_failure AFTER UPDATE ON users
+                DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION auth_test_timezone_failure()
+                """)
+            )
+        try:
+            response = await client.patch(
+                ME,
+                json={"timezone": "Europe/Saratov"},
+                headers={"X-CSRF-Token": client.cookies[CSRF_COOKIE]},
+            )
+            assert response.status_code == 500
+            assert response.json()["error"]["code"] == "internal_error"
+            assert response.headers["cache-control"] == "no-store"
+            assert "set-cookie" not in response.headers
+            assert "private-timezone-failure" not in response.text + caplog.text
+            assert (await client.get(ME)).json() == profile
+        finally:
+            async with financial_migrator.begin() as connection:
+                await connection.execute(
+                    text("DROP TRIGGER auth_test_timezone_failure ON users")
+                )
+                await connection.execute(
+                    text("DROP FUNCTION auth_test_timezone_failure()")
+                )
 
 
 async def test_logout_checks_expiry_after_waiting_for_session_lock(

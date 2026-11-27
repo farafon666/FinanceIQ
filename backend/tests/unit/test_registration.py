@@ -40,7 +40,10 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
         yield test_client
 
 
-@pytest.mark.parametrize("path", [REGISTER, LOGIN])
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [("POST", REGISTER), ("POST", LOGIN), ("PATCH", "/api/v1/auth/me")],
+)
 @pytest.mark.parametrize(
     "origins",
     [
@@ -55,10 +58,10 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     ],
 )
 def test_invalid_origin_is_rejected_before_reading_body(
-    client: TestClient, path: str, origins: list[str]
+    client: TestClient, method: str, path: str, origins: list[str]
 ) -> None:
     request = client.build_request(
-        "POST",
+        method,
         path,
         content=UnreadableBody(),
         headers={

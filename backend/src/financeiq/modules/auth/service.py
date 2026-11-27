@@ -19,6 +19,7 @@ from financeiq.modules.auth.repository import (
     lock_active_credentials,
     revoke_auth_session,
     update_password_hash,
+    update_user_timezone,
 )
 from financeiq.modules.categories.service import create_default_categories
 
@@ -109,6 +110,13 @@ async def authenticate_session(
     async with transaction(session):
         record = await find_valid_session(session, digest)
     return AuthenticatedSession(*record) if record is not None else None
+
+
+async def change_timezone(
+    session: AsyncSession, *, user_id: UUID, timezone: str
+) -> tuple[UUID, str, str] | None:
+    async with transaction(session):
+        return await update_user_timezone(session, user_id, timezone)
 
 
 async def logout_user(session: AsyncSession, session_id: UUID) -> bool:
