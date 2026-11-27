@@ -4,22 +4,24 @@ import asyncio
 import hmac
 from base64 import urlsafe_b64decode
 from collections import Counter
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from datetime import timedelta
+from copy import copy
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from http.cookies import SimpleCookie
 from ipaddress import ip_address
+from unicodedata import normalize
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 from argon2 import PasswordHasher, extract_parameters
-from sqlalchemy import insert, select, text
+from sqlalchemy import DateTime, func, insert, literal, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from financeiq.main import create_app
-from financeiq.modules.auth import service
+from financeiq.modules.auth import passwords, repository, service
 from financeiq.modules.auth.models import AuthRateLimit, AuthSession, User
 from tests.support.postgres import TestPostgres
 
@@ -54,6 +56,25 @@ def auth_environment(
     monkeypatch.delenv("FINANCEIQ_AUTH_TRUSTED_PROXIES", raising=False)
     # Exercise sessions and counters before physical removal, covered separately.
     monkeypatch.setattr("financeiq.main.run_auth_cleanup", AsyncMock())
+
+
+@pytest.fixture
+def freeze_database_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Callable[[datetime], None]:
+    auth_functions = copy(func)
+    monkeypatch.setattr(repository, "func", auth_functions)
+
+    def freeze(instant: datetime) -> None:
+        # Keep the comparisons and window arithmetic in PostgreSQL.
+        monkeypatch.setattr(
+            auth_functions,
+            "clock_timestamp",
+            lambda **_: literal(instant, type_=DateTime(timezone=True)),
+            raising=False,
+        )
+
+    return freeze
 
 
 @asynccontextmanager
@@ -97,8 +118,9 @@ def session_secrets(response: httpx.Response) -> tuple[bytes, bytes]:
 async def test_login_rehashes_and_persists_two_independent_sessions(
     financial_engine: AsyncEngine,
 ) -> None:
-    password = " Pre\u0301serve This Password "
-    normalized = " Préserve This Password "
+    password = " Pre\u0301serve" + "z" * 118 + " "
+    normalized = normalize("NFC", password)
+    assert len(normalized) == 128
     old_hash = PasswordHasher(memory_cost=8192, time_cost=2, parallelism=1).hash(
         normalized
     )
@@ -115,7 +137,11 @@ async def test_login_rehashes_and_persists_two_independent_sessions(
             first.post(LOGIN, json=payload), second.post(LOGIN, json=payload)
         )
         pairs = [session_secrets(response) for response in responses]
-        for wrong_password in (normalized.strip(), normalized.lower()):
+        for wrong_password in (
+            normalized.strip(),
+            normalized.lower(),
+            normalized[:-1] + "x",
+        ):
             response = await first.post(
                 LOGIN, json=payload | {"password": wrong_password}
             )
@@ -140,16 +166,28 @@ async def test_login_rehashes_and_persists_two_independent_sessions(
     assert password_hash is not None and password_hash != old_hash
     assert PasswordHasher().verify(password_hash, normalized)
     assert extract_parameters(password_hash).memory_cost == 19456
-    assert counts == {"login_ip": 4, "login_email": 4}
+    assert counts == {"login_ip": 5, "login_email": 5}
 
 
 async def test_invalid_credentials_have_one_response(
-    financial_engine: AsyncEngine, caplog: pytest.LogCaptureFixture
+    financial_engine: AsyncEngine,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     password = "Synthetic password marker"
     password_hash = PasswordHasher(memory_cost=19456, time_cost=2, parallelism=1).hash(
         password
     )
+    verified_hashes: list[str | bytes] = []
+    verify = PasswordHasher.verify
+
+    def observe_verify(
+        hasher: PasswordHasher, encoded: str | bytes, candidate: str | bytes
+    ) -> bool:
+        verified_hashes.append(encoded)
+        return verify(hasher, encoded, candidate)
+
+    monkeypatch.setattr(PasswordHasher, "verify", observe_verify)
     async with financial_engine.begin() as connection:
         await connection.execute(
             insert(User),
@@ -168,15 +206,21 @@ async def test_invalid_credentials_have_one_response(
                 },
             ],
         )
-    async with auth_client() as client:
-        responses = [
-            await client.post(LOGIN, json={"email": email, "password": submitted})
-            for email, submitted in (
-                (EMAIL, "short"),
-                ("missing@example.org", password),
-                ("inactive@example.org", password),
-            )
-        ]
+    with caplog.at_level("DEBUG"):
+        async with auth_client() as client:
+            responses = [
+                await client.post(LOGIN, json={"email": email, "password": submitted})
+                for email, submitted in (
+                    (EMAIL, "é" * 14),
+                    ("missing@example.org", password),
+                    ("inactive@example.org", password),
+                )
+            ]
+    assert verified_hashes == [
+        password_hash,
+        passwords.DUMMY_PASSWORD_HASH,
+        passwords.DUMMY_PASSWORD_HASH,
+    ]
     assert all(response.status_code == 401 for response in responses)
     assert all(response.content == responses[0].content for response in responses)
     assert all("set-cookie" not in response.headers for response in responses)
@@ -184,7 +228,16 @@ async def test_invalid_credentials_have_one_response(
         response.headers["cache-control"] == "no-store" for response in responses
     )
     assert responses[0].json()["error"]["code"] == "invalid_credentials"
-    for private in (EMAIL, password, password_hash, SECRET.hex()):
+    for private in (
+        EMAIL,
+        "missing@example.org",
+        "inactive@example.org",
+        "é" * 14,
+        password,
+        password_hash,
+        passwords.DUMMY_PASSWORD_HASH,
+        SECRET.hex(),
+    ):
         assert private not in responses[0].text + caplog.text
     async with AsyncSession(financial_engine) as observer:
         assert await observer.scalar(select(AuthSession.id)) is None
@@ -257,8 +310,10 @@ async def test_concurrent_registration_limit_survives_new_app(
 
 
 async def test_login_email_limit_charges_ip_and_new_window_admits(
-    financial_engine: AsyncEngine, financial_migrator: AsyncEngine
+    financial_engine: AsyncEngine, freeze_database_clock: Callable[[datetime], None]
 ) -> None:
+    window_end = datetime(2026, 11, 27, 12, 15, tzinfo=UTC)
+    freeze_database_clock(window_end - timedelta(minutes=10))
     async with auth_client() as first, auth_client("192.0.2.2") as second:
         clients = (first, second)
         names = (EMAIL, "  Test.Name+Work@Example.Org  ")
@@ -271,6 +326,11 @@ async def test_login_email_limit_charges_ip_and_new_window_admits(
             )
         )
     assert Counter(response.status_code for response in responses) == {401: 10, 429: 3}
+    for response in responses:
+        if response.status_code == 429:
+            assert response.headers["retry-after"] == "600"
+            assert response.headers["cache-control"] == "no-store"
+            assert response.json()["error"]["code"] == "rate_limited"
     async with AsyncSession(financial_engine) as observer:
         rows = list(await observer.scalars(select(AuthRateLimit)))
         assert sum(row.attempt_count for row in rows if row.scope == "login_ip") == 13
@@ -280,17 +340,17 @@ async def test_login_email_limit_charges_ip_and_new_window_admits(
             SECRET, b"login_email\0" + EMAIL.encode("ascii"), "sha256"
         )
 
-    # Expire the exhausted buckets on the disposable test database.
-    async with financial_migrator.begin() as connection:
-        await connection.execute(
-            text(
-                "UPDATE auth_rate_limits SET window_start = window_start - interval '15 minutes'"
-            )
-        )
+    credentials = {"email": EMAIL, "password": "short"}
+    freeze_database_clock(window_end - timedelta(microseconds=1))
     async with auth_client() as restarted:
-        assert (
-            await restarted.post(LOGIN, json={"email": EMAIL, "password": "short"})
-        ).status_code == 401
+        response = await restarted.post(LOGIN, json=credentials)
+        assert response.status_code == 429
+        assert response.headers["retry-after"] == "1"
+
+        freeze_database_clock(window_end)
+        response = await restarted.post(LOGIN, json=credentials)
+        assert response.status_code == 401
+        assert "retry-after" not in response.headers
     async with AsyncSession(financial_engine) as observer:
         counts = list(
             await observer.scalars(
@@ -590,6 +650,24 @@ async def test_unknown_session_is_unauthenticated() -> None:
         assert_authentication_required(
             await client.get(ME, headers={"Cookie": f"{SESSION_COOKIE}={'A' * 43}"})
         )
+
+
+async def test_session_expires_at_the_exact_boundary(
+    financial_engine: AsyncEngine, freeze_database_clock: Callable[[datetime], None]
+) -> None:
+    async with auth_client() as client:
+        profile = await register_and_login(client)
+        async with financial_engine.connect() as observer:
+            expires_at = await observer.scalar(select(AuthSession.expires_at))
+        assert expires_at is not None
+
+        freeze_database_clock(expires_at - timedelta(microseconds=1))
+        response = await client.get(ME)
+        assert response.status_code == 200
+        assert response.json() == profile
+
+        freeze_database_clock(expires_at)
+        assert_authentication_required(await client.get(ME))
 
 
 async def test_profile_is_scoped_to_the_session_owner(

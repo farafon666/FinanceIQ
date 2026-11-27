@@ -42,7 +42,12 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
 
 @pytest.mark.parametrize(
     ("method", "path"),
-    [("POST", REGISTER), ("POST", LOGIN), ("PATCH", "/api/v1/auth/me")],
+    [
+        ("POST", REGISTER),
+        ("POST", LOGIN),
+        ("PATCH", "/api/v1/auth/me"),
+        ("POST", "/api/v1/auth/logout"),
+    ],
 )
 @pytest.mark.parametrize(
     "origins",

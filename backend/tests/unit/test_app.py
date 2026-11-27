@@ -125,6 +125,15 @@ class ApplicationTests(unittest.TestCase):
         )
         self.assertNotIn("content", responses["204"])
         self.assertIn("Set-Cookie", responses["204"]["headers"])
+        for status in ("400", "401", "403", "415", "422", "429", "500"):
+            with self.subTest(status=status):
+                model_name = (
+                    "ValidationErrorResponse" if status == "422" else "ErrorResponse"
+                )
+                actual = responses[status]["content"]["application/json"]["schema"][
+                    "$ref"
+                ]
+                self.assertEqual(actual, f"#/components/schemas/{model_name}")
         self.assertEqual(
             responses["429"]["headers"]["Retry-After"]["schema"]["type"], "integer"
         )
